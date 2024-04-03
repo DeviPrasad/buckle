@@ -1,22 +1,42 @@
+use crate::nat::NatStrCase::Lower;
+
 pub const BITS_PER_NAT_LIMB: usize = u64::BITS as usize;
 
-#[derive(Clone, Debug)]
-pub struct Nat<const SIZE: usize> {
-    pub(crate) mag: [u64; SIZE],
+pub enum NatStrPadding {
+    Minimal,
+    Full,
 }
 
-impl<const SIZE: usize> Default for Nat<SIZE> {
+pub enum NatStrCase {
+    Lower,
+    Upper,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nat<const BITS: u32> {
+    pub(crate) bits: u32,
+    pub(crate) mag: Vec<u64>,
+}
+
+impl<const BITS: u32> Default for Nat<BITS> {
     fn default() -> Self {
+        let size: usize =
+            BITS as usize / BITS_PER_NAT_LIMB +
+                match BITS as usize % BITS_PER_NAT_LIMB {
+                    0 => 0,
+                    _ => 1
+                };
         Nat {
-            mag: [0; SIZE],
+            bits: BITS,
+            mag: vec![0; size],
         }
     }
 }
 
-impl<const SIZE: usize> Nat<SIZE> {
-    pub const MSB_POS: usize = SIZE * BITS_PER_NAT_LIMB - 1;
-    pub fn bits_to_nat_size(bit_count: usize) -> usize {
-        bit_count / BITS_PER_NAT_LIMB + 1
+impl<const BITS: u32> Nat<BITS> {
+    pub const MSB_POS: usize = BITS as usize - 1;
+    pub fn nat_size() -> u32 {
+        (BITS as usize / BITS_PER_NAT_LIMB + 1) as u32
     }
 
     pub fn zero() -> Self {
@@ -26,21 +46,22 @@ impl<const SIZE: usize> Nat<SIZE> {
         Self::new_u64(1)
     }
 
+    /*
+    pub fn from_le(data: &[u64]) -> Self {
+        debug_assert!(data.len() <= SIZE);
+        Nat { bits: 0, mag: data.clone() }
+    }
+    */
+
     pub fn new_u64(val: u64) -> Self {
-        // let n = Self::default();
-        Nat {
-            mag: core::array::from_fn::<_, SIZE, _>(
-                |i| if i == 0 {
-                    val
-                } else {
-                    0
-                })
-        }
+        let mut n = Self::default();
+        n.mag[0] = val;
+        n
     }
 
     pub fn add(&self, n2: &Self) -> (Self, u64) {
         let mut carry: u64 = 0;
-        let mut res = Nat::<SIZE>::default();
+        let mut res = Nat::<BITS>::default();
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             let limb_sum: u64;
             (limb_sum, carry) = crate::bits::add_with_carry(x, y, carry);
@@ -52,7 +73,7 @@ impl<const SIZE: usize> Nat<SIZE> {
     pub fn sub(&self, n2: &Self) -> (Self, i64) {
         let mut borrow: u64 = 0;
         let mut mag_diff: u64 = 0; // will stay zero when x.mag == y.mag
-        let mut res = Nat::<SIZE>::default();
+        let mut res = Nat::<BITS>::default();
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             let limb_diff: u64; // diff between each corresponding limbs of x and y
             (limb_diff, borrow) = crate::bits::sub_with_borrow(x, y, borrow);
@@ -135,44 +156,36 @@ impl<const SIZE: usize> Nat<SIZE> {
     }
 
     fn bit_count(&self) -> u32 {
-        SIZE as u32 * u64::BITS
+        BITS
     }
 
     fn clear_bit(&self, pos: usize) -> Self {
-        debug_assert!(pos <= Self::MSB_POS);
+        debug_assert!(pos <= Self::MSB_POS, "clear_bit_mut {pos} >= {BITS}");
         self.clone().clear_bit_mut(pos)
     }
 
     fn clear_bit_mut(mut self, pos: usize) -> Self {
-        debug_assert!(pos <= Self::MSB_POS);
-        if pos <= Self::MSB_POS {
-            let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
-            self.mag[l] |= self.mag[l] & !(1 << p);
-        }
+        debug_assert!(pos <= Self::MSB_POS, "clear_bit_mut {pos} >= {BITS}");
+        let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
+        self.mag[l] |= self.mag[l] & !(1 << p);
         self
     }
 
     pub fn test_bit(&self, pos: usize) -> bool {
-        debug_assert!(pos <= Self::MSB_POS);
-        if pos <= Self::MSB_POS {
-            let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
-            self.mag[l] & (1 << p) != 0
-        } else {
-            false
-        }
+        debug_assert!(pos <= Self::MSB_POS, "test_bit {pos} >= {BITS}");
+        let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
+        self.mag[l] & (1 << p) != 0
     }
 
     fn set_bit(&self, pos: usize) -> Self {
-        debug_assert!(pos <= Self::MSB_POS);
+        debug_assert!(pos <= Self::MSB_POS, "set_bit {pos} >= {BITS}");
         self.clone().set_bit_mut(pos)
     }
 
     pub fn set_bit_mut(mut self, pos: usize) -> Self {
-        debug_assert!(pos <= Self::MSB_POS);
-        if pos <= Self::MSB_POS {
-            let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
-            self.mag[l] |= 1 << p;
-        }
+        debug_assert!(pos <= Self::MSB_POS, "set_bit_mut {pos} >= {BITS}");
+        let (l, p) = (pos / BITS_PER_NAT_LIMB, pos % BITS_PER_NAT_LIMB);
+        self.mag[l] |= 1 << p;
         self
     }
 
@@ -193,7 +206,7 @@ impl<const SIZE: usize> Nat<SIZE> {
     }
 
     fn and(&self, n2: &Self) -> Self {
-        let mut res = Nat::<SIZE>::default();
+        let mut res = Nat::<BITS>::default();
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x & y;
         });
@@ -208,7 +221,7 @@ impl<const SIZE: usize> Nat<SIZE> {
     }
 
     fn or(&self, n2: &Self) -> Self {
-        let mut res = Nat::<SIZE>::default();
+        let mut res = Nat::<BITS>::default();
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x | y;
         });
@@ -223,7 +236,7 @@ impl<const SIZE: usize> Nat<SIZE> {
     }
 
     fn xor(&self, n2: &Self) -> Self {
-        let mut res = Nat::<SIZE>::default();
+        let mut res = Nat::<BITS>::default();
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x ^ y;
         });
@@ -237,8 +250,29 @@ impl<const SIZE: usize> Nat<SIZE> {
         self.clone()
     }
 
-    pub fn hex_str(&self) -> String {
-        "".to_string()
+    pub fn leading_non_zero_limb(&self) -> Option<u32> {
+        for (i, &v) in self.mag.iter().rev().enumerate() {
+            if v > 0 {
+                return Some(i as u32);
+            }
+        }
+        None
+    }
+
+    pub fn hex_str(&self, fc: &NatStrCase, pad: &NatStrPadding) -> String {
+        let format = |v: u64| -> String {
+            match (fc, pad) {
+                (Lower, NatStrPadding::Minimal) => format!("{v:0x}"),
+                (Lower, NatStrPadding::Full) => format!("{v:016x}"),
+                (NatStrCase::Upper, NatStrPadding::Minimal) => format!("{v:0X}"),
+                (NatStrCase::Upper, NatStrPadding::Full) => format!("{v:016X}"),
+            }
+        };
+        let mut s = String::new();
+        for &v in self.mag.iter().rev() {
+            s.push_str(&format(v));
+        }
+        "0x".to_string() + s.as_str()
     }
 
     pub fn dec_str(&self) -> String {
@@ -259,25 +293,24 @@ impl<const SIZE: usize> Nat<SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BITS_PER_NAT_LIMB, Nat};
+    use super::{BITS_PER_NAT_LIMB, Nat, NatStrCase, NatStrPadding};
 
     #[test]
-    fn test_nat1k_create() {
+    fn nat1k_create() {
         const NAT_1K_BITS: usize = 1024 / BITS_PER_NAT_LIMB + 1;
-        let n = Nat::<NAT_1K_BITS>::default();
+        let n = Nat::<1024>::default();
         assert!(n.bit_count() >= 1024);
     }
 
     #[test]
-    fn test_nat512_cmp() {
-        const NAT_512_BITS: usize = 512 / BITS_PER_NAT_LIMB + 1;
-        let n0 = Nat::<NAT_512_BITS>::zero();
-        assert!(n0.bit_count() >= 512);
-        let n1 = Nat::<NAT_512_BITS>::one();
-        assert!(n1.bit_count() >= 512);
-        let n2 = Nat::<NAT_512_BITS>::new_u64(2);
-        assert!(n1.bit_count() >= n2.bit_count());
-        let n65525 = Nat::<NAT_512_BITS>::new_u64(65535);
+    fn nat512_cmp() {
+        let n0 = Nat::<512>::zero();
+        assert_eq!(n0.bit_count(), 512);
+        let n1 = Nat::<512>::one();
+        assert_eq!(n1.bit_count(), 512);
+        let n2 = Nat::<512>::new_u64(2);
+        assert_eq!(n1.bit_count(), n2.bit_count());
+        let n65525 = Nat::<512>::new_u64(65535);
         assert!(n0.eq(&n0));
         assert!(n1.lt(&n2));
         assert!(n2.gt(&n1));
@@ -288,8 +321,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nat4k_set_bit() {
-        let n1 = Nat::<{ 4096_usize / BITS_PER_NAT_LIMB + 1}>::one();
+    fn nat4k_set_bit() {
+        let n1 = Nat::<4096>::one();
         assert!(n1.bit_count() >= 4096);
         assert!(n1.test_bit(0));
         assert!(!n1.test_bit(1));
@@ -305,8 +338,8 @@ mod tests {
 
     #[cfg(not(debug_assertions))]
     #[test]
-    fn test_release_nat4k_set_and_test_bit() {
-        let n1 = Nat::<{ 4096 / BITS_PER_NAT_LIMB }>::one();
+    fn release_nat4k_set_and_test_bit() {
+        let n1 = Nat::<4096>::one();
         assert_eq!(n1.bit_count(), 4096);
         assert!(n1.test_bit(0));
         assert!(!n1.test_bit(1));
@@ -320,22 +353,42 @@ mod tests {
         assert!(!n2p4095.test_bit(1600));
         assert!(n2p4095.gt(&n1));
 
-        assert!(!n2p4095.test_bit(4096));
-        assert!(!n2p4095.test_bit(16000));
-        assert!(!n1.test_bit(4096));
-        assert!(!n1.test_bit(16000));
-        assert!(!n1.test_bit(1600));
+        // assert!(!n2p4095.test_bit(4096));
+        // assert!(!n2p4095.test_bit(16000));
     }
 
     #[test]
-    fn test_nat96_bit_ops() {
-        let n96_01 = Nat::<{ 96_usize / BITS_PER_NAT_LIMB + 1 }>::new_u64(0xFFFF00000000FFFF);
-        assert!(n96_01.bit_count() >= 96);
-        let n96_02 = Nat::<{ 96_usize / BITS_PER_NAT_LIMB + 1}>::new_u64(0x1111000011110000);
-        assert!(n96_02.bit_count() >= 96);
+    fn nat96_bit_ops() {
+        let n96_zero = Nat::<96>::zero();
+        let n96_x = Nat::<96>::new_u64(0xFFFF00000000FFFF);
+        assert!(n96_x.bit_count() >= 96);
+        let n96_y = Nat::<96>::new_u64(0xEEEE000011110000);
+        assert_eq!(n96_y.bit_count(), 96);
 
-        let n96_zero = n96_01.xor(&n96_01);
-        assert_eq!(n96_zero.mag[0], 0);
-        assert_eq!(n96_zero.mag[1], 0);
+        assert_eq!(n96_x.xor(&n96_x), n96_zero);
+        assert_eq!(n96_x.xor(&n96_y), Nat::<96>::new_u64(0x111100001111FFFF));
+        assert_eq!(n96_x.or(&n96_y), Nat::<96>::new_u64(0xFFFF00001111FFFF));
+        assert_eq!(n96_x.and(&n96_y), Nat::<96>::new_u64(0xEEEE000000000000));
+        assert_eq!(n96_x.and(&n96_x), Nat::<96>::new_u64(0xFFFF00000000FFFF));
+    }
+
+    #[test]
+    fn hex() {
+        {
+            let n96_x = Nat::<96>::new_u64(0xEEEE000011110000);
+            assert_eq!(n96_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Full), "0x0000000000000000EEEE000011110000");
+            assert_eq!(n96_x.hex_str(&NatStrCase::Lower, &NatStrPadding::Minimal), "0x0EEEE000011110000".to_lowercase());
+            let n96_x = n96_x.set_bit_mut(95);
+            assert_eq!(n96_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Full), "0x0000000080000000EEEE000011110000");
+            let n96_x = n96_x.set_bit_mut(94);
+            assert_eq!(n96_x.hex_str(&NatStrCase::Lower, &NatStrPadding::Full), "0x00000000C0000000EEEE000011110000".to_lowercase());
+            assert_eq!(n96_x.hex_str(&NatStrCase::Lower, &NatStrPadding::Minimal), "0xC0000000EEEE000011110000".to_lowercase());
+            assert_eq!(n96_x.hex_str(&NatStrCase::Lower, &NatStrPadding::Minimal), "0xC0000000EEEE000011110000".to_lowercase());
+        }
+        {
+            let n64_x = Nat::<64>::new_u64(0xEEEE000011110000);
+            assert_eq!(n64_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Full), "0xEEEE000011110000");
+            assert_eq!(n64_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Minimal), "0xEEEE000011110000");
+        }
     }
 }
