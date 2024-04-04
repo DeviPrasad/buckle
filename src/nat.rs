@@ -1,5 +1,7 @@
 use std::cmp::{max, min};
 
+use crate::bits;
+
 pub const BITS_PER_NAT_LIMB: u32 = u64::BITS;
 
 pub enum NatStrPadding {
@@ -15,7 +17,7 @@ pub enum NatStrCase {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nat {
     pub(crate) bits: u32,
-    pub(crate) mag: Vec<u64>,
+    pub mag: Vec<u64>,
 }
 
 impl Nat {
@@ -36,12 +38,12 @@ impl Nat {
         }
     }
 
-    fn bit_len(&self) -> u32 {
+    pub fn bit_len(&self) -> u32 {
         self.check_invariant();
         self.bits
     }
 
-    fn nat_len(&self) -> u32 {
+    pub fn nat_len(&self) -> u32 {
         self.check_invariant();
         self.mag.len() as u32
     }
@@ -63,6 +65,28 @@ impl Nat {
         };
         n.check_invariant();
         n
+    }
+
+    pub fn new_from_parts(bit_len: u32, mag: Vec<u64>) -> Self {
+        let bl = min(max(bit_len, Nat::BIT_LEN_MIN), Nat::BIT_LEN_MAX);
+        let new_size = Nat::size(bl) as usize;
+        let mag_size = mag.len();
+        debug_assert!(mag_size >= new_size, "new_from_parts - bad request");
+        #[cfg(release_test)]
+        assert!(mag_size >= new_size, "rut - new_from_parts called with bad arguments");
+        let nat =
+            if new_size == mag_size {
+                Nat {
+                    bits: bit_len,
+                    mag,
+                }
+            } else {
+                let mut n = Nat::new(bl);
+                n.mag.copy_from_slice(&mag[0..new_size]);
+                n
+            };
+        nat.check_invariant();
+        nat
     }
 
     pub fn zero(bit_len: u32) -> Self {
@@ -123,6 +147,30 @@ impl Nat {
         self
     }
 
+    fn inverse(&self, _n: &Nat) -> Nat {
+        panic!("inverse - no implementation")
+    }
+
+    fn sqrt(&self) -> Nat {
+        panic!("sqrt - no implementation")
+    }
+
+    fn min(&self, n2: &Self) -> Nat {
+        if self.lt(&n2) {
+            self.clone()
+        } else {
+            n2.clone()
+        }
+    }
+
+    fn max(&self, n2: &Nat) -> Nat {
+        if self.gt(&n2) {
+            self.clone()
+        } else {
+            n2.clone()
+        }
+    }
+
     fn eq(&self, n2: &Self) -> bool {
         self.check_invariant();
         let mut res = self.bit_len() == n2.bit_len();
@@ -166,7 +214,7 @@ impl Nat {
         let mut res = Nat::new(n1.bit_len());
         n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             let limb_sum: u64;
-            (limb_sum, carry) = crate::bits::add_with_carry(x, y, carry);
+            (limb_sum, carry) = bits::add_with_carry(x, y, carry);
             res.mag[i] = limb_sum;
         });
         res.check_invariant();
@@ -206,7 +254,7 @@ impl Nat {
         let mut res = Nat::new(n1.bit_len());
         n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             let limb_diff: u64; // diff between each corresponding limbs of x and y
-            (limb_diff, borrow) = crate::bits::sub_with_borrow(x, y, borrow);
+            (limb_diff, borrow) = bits::sub_with_borrow(x, y, borrow);
             mag_diff |= limb_diff;
             res.mag[i] = limb_diff;
         });
@@ -216,6 +264,41 @@ impl Nat {
         };
         res.check_invariant();
         (res, (-(borrow as i64)) | d)
+    }
+
+    // school-book multiplication
+    //
+    pub fn mul(n1: &Nat, n2: &Nat) -> Nat {
+        n1.check_invariant();
+        n2.check_invariant();
+        debug_assert!(n1.bit_len() == n2.bit_len(), "mul {} != {}", n1.bit_len(), n2.bit_len());
+        let mut product: Vec<u64> = vec![0; (n1.nat_len() as u64 * 2) as usize];
+        let n2_len = n2.nat_len() as usize;
+        for (i, &x) in n1.mag.iter().enumerate() {
+            let mut carry: u64 = 0;
+            for (j, &y) in n2.mag.iter().enumerate() {
+                let r: bits::U128 = bits::mul64(x, y);
+                let sum = r.lo as u128 + product[i + j] as u128 + carry as u128;
+                product[i + j] = sum as u64;
+                carry = r.hi + ((sum >> 64) as u64);
+            }
+            product[i + n2_len] = carry;
+        }
+        let prod = Nat::new_from_parts(n1.bit_len() * 2, product);
+        prod.check_invariant();
+        prod
+    }
+
+    pub fn div(&self, _n: &Nat) -> Nat {
+        panic!("div - no implementation")
+    }
+
+    pub fn rem(&self, _n: &Nat) -> Nat {
+        panic!("rem - no implementation")
+    }
+
+    pub fn divide(&self, _n: &Nat) -> (Nat, Nat) {
+        panic!("divide - no implementation")
     }
 
     fn clear_bit(&self, pos: u32) -> Nat {
@@ -468,6 +551,113 @@ mod test {
             assert_eq!(n64_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Full), "0xEEEE000011110000");
             assert_eq!(n64_x.hex_str(&NatStrCase::Upper, &NatStrPadding::Minimal), "0xEEEE000011110000");
         }
+    }
+
+    #[test]
+    fn nat_mul_256() {
+        {
+            let n256_x = Nat::new_u64(256, 0xFFFF000000050003);
+            let n256_y = Nat::new_u64(256, 1);
+            let prod = Nat::mul(&n256_x, &n256_y);
+            assert_eq!(prod.mag[0], 0xFFFF000000050003);
+            assert_eq!(prod.mag[1], 0);
+            assert_eq!(prod.mag[2], 0);
+            assert_eq!(prod.mag[3], 0);
+        }
+        {
+            let n256_x = Nat::new_u64(256, 0xFFFF000000050003);
+            let n256_y = Nat::new_u64(256, 2);
+            let prod = Nat::mul(&n256_x, &n256_y);
+            assert_eq!(prod.mag[0], 0xfffe0000000a0006);
+            assert_eq!(prod.mag[1], 1);
+            assert_eq!(prod.mag[2], 0);
+            assert_eq!(prod.mag[3], 0);
+        }
+        {
+            let n256_x = Nat::new_u64(256, 0xFFFF000000050003);
+            let n256_y = Nat::new_u64(256, 0xFFFF000000000000);
+            let prod = Nat::mul(&n256_x, &n256_y);
+            assert_eq!(prod.mag[0], 0xfffd000000000000);
+            assert_eq!(prod.mag[1], 0xfffe00010004fffd);
+            assert_eq!(prod.mag[2], 0);
+            assert_eq!(prod.mag[3], 0);
+        }
+        {
+            let n256_x = Nat::new_u64(256, 0xFFFFFFFFFFFFFFFF);
+            let n256_y = Nat::new_u64(256, 0xFFFFFFFFFFFFFFFF);
+            let prod = Nat::mul(&n256_x, &n256_y);
+            assert_eq!(prod.mag[0], 0x0000000000000001);
+            assert_eq!(prod.mag[1], 0xfffffffffffffffe);
+            assert_eq!(prod.mag[2], 0);
+            assert_eq!(prod.mag[3], 0);
+        }
+        {
+            let mut n256_x = Nat::new_u64(256, 0xFFFFFFFFFFFFFFFF);
+            n256_x.mag[1] = 0xF;
+            let mut n256_y = Nat::new_u64(256, 0xFFFFFFFFFFFFFFFF);
+            n256_y.mag[1] = 0xF;
+            let prod = Nat::mul(&n256_x, &n256_y);
+            assert_eq!(prod.mag[0], 1);
+            assert_eq!(prod.mag[1], 0xffffffffffffffe0);
+            assert_eq!(prod.mag[2], 0xff);
+            assert_eq!(prod.mag[3], 0);
+        }
+        {
+            let mut n256_x = Nat::new(256);
+            n256_x.mag[0] = 0xFFFFFFFFFFFFFFFF;
+            n256_x.mag[1] = 0xFFFFFFFFFFFFFFFF;
+            n256_x.mag[2] = 0xFFFFFFFFFFFFFFFF;
+            n256_x.mag[3] = 0xFFFFFFFFFFFFFFFF;
+            let mut n256_y = Nat::new(256);
+            n256_y.mag[0] = 0xFFFFFFFFFFFFFFFF;
+            n256_y.mag[1] = 0xFFFFFFFFFFFFFFFF;
+            n256_y.mag[2] = 0xFFFFFFFFFFFFFFFF;
+            n256_y.mag[3] = 0xFFFFFFFFFFFFFFFF;
+            let prod = Nat::mul(&n256_x, &n256_y);
+            /*eprintln!("{:0X} {:0X} {:0X} {:0X} {:0X} {:0X} {:0X} {:0X}",
+                      prod.mag[7],
+                      prod.mag[6],
+                      prod.mag[5],
+                      prod.mag[4],
+                      prod.mag[3],
+                      prod.mag[2],
+                      prod.mag[1],
+                      prod.mag[0]);*/
+            assert_eq!(prod.mag[0], 1);
+            assert_eq!(prod.mag[1], 0);
+            assert_eq!(prod.mag[2], 0);
+            assert_eq!(prod.mag[3], 0);
+            assert_eq!(prod.mag[4], 0xfffffffffffffffe);
+            assert_eq!(prod.mag[5], 0xffffffffffffffff);
+            assert_eq!(prod.mag[6], 0xffffffffffffffff);
+            assert_eq!(prod.mag[7], 0xffffffffffffffff);
+        }
+    }
+
+    #[test]
+    fn nat_from_parts() {
+        let mag = vec![0xFFFFFFFF_u64; 8];
+        {
+            let nat = Nat::new_from_parts(512, mag.clone());
+            assert_eq!(nat.mag, vec![0xFFFFFFFF_u64; 8])
+        }
+        {
+            let nat = Nat::new_from_parts(256, mag.clone());
+            assert_eq!(nat.mag, vec![0xFFFFFFFF_u64; 4])
+        }
+        {
+            let nat = Nat::new_from_parts(128, mag.clone());
+            assert_eq!(nat.mag, vec![0xFFFFFFFF_u64; 2])
+        }
+        // this would fail because requested size > magnitude's current size
+        /*
+        {
+            let nat = Nat::new_from_parts(4096, mag.clone());
+            assert_eq!(nat.bit_len(), 4096);
+            assert_eq!(nat.nat_len(), 4096/64);
+            assert_eq!(nat.mag, vec![0xFFFFFFFF_u64; 512])
+        }
+        */
     }
 }
 
