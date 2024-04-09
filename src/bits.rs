@@ -1,35 +1,35 @@
 #[allow(unused_variables)]
-use crate::NatDigit;
+use crate::Digit;
 use crate::U128;
 
 // sub_with_borrow calculates: diff = x - y - borrow.
 // The borrow input must be 0 or 1.
 // The borrow_out is guaranteed to be 0 or 1.
 #[allow(dead_code)]
-pub fn sub_with_borrow(x: NatDigit, y: NatDigit, borrow: NatDigit) -> (/* diff */ NatDigit, /* borrow_out */ NatDigit) {
+pub fn sub_with_borrow(x: Digit, y: Digit, borrow: Digit) -> (/* diff */ Digit, /* borrow_out */ Digit) {
     debug_assert!(borrow <= 1);
     let (diff, o1) = x.overflowing_sub(y);
     let (diff, o2) = diff.overflowing_sub(borrow);
     assert!(o1 as u64 <= 1 && o2 as u64 <= 1);
-    (diff, o1 as NatDigit | o2 as NatDigit)
+    (diff, o1 as Digit | o2 as Digit)
 }
 
 #[allow(dead_code)]
-pub fn add_with_carry(x: NatDigit, y: NatDigit, carry: NatDigit) -> (/* sum */ NatDigit, /* carry_out */ NatDigit) {
+pub fn add_with_carry(x: Digit, y: Digit, carry: Digit) -> (/* sum */ Digit, /* carry_out */ Digit) {
     debug_assert!(carry <= 1);
     let (sum, o1) = x.overflowing_add(y);
     let (sum, o2) = sum.overflowing_add(carry);
-    assert!(o1 as NatDigit <= 1 && o2 as NatDigit <= 1);
-    (sum, o1 as NatDigit | o2 as NatDigit)
+    assert!(o1 as Digit <= 1 && o2 as Digit <= 1);
+    (sum, o1 as Digit | o2 as Digit)
 }
 
 // This is the simplest version of mul64 using Rust's 128-bit multiplication
-pub fn mul64(x: NatDigit, y: NatDigit) -> U128 {
+pub fn mul64(x: Digit, y: Digit) -> U128 {
     let r2: u128 = x as u128 * y as u128;
-    U128 { lo: r2 as NatDigit, hi: (r2 >> 64) as NatDigit }
+    U128 { lo: r2 as Digit, hi: (r2 >> 64) as Digit }
 }
 
-pub fn _mul_(x: NatDigit, y: NatDigit) -> NatDigit {
+pub fn _mul_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_mul(y).0
     } else {
@@ -37,7 +37,7 @@ pub fn _mul_(x: NatDigit, y: NatDigit) -> NatDigit {
     }
 }
 
-pub fn _div_(x: NatDigit, y: NatDigit) -> NatDigit {
+pub fn _div_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_div(y).0
     } else {
@@ -45,7 +45,7 @@ pub fn _div_(x: NatDigit, y: NatDigit) -> NatDigit {
     }
 }
 
-pub fn _sub_(x: NatDigit, y: NatDigit) -> NatDigit {
+pub fn _sub_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_sub(y).0
     } else {
@@ -53,7 +53,7 @@ pub fn _sub_(x: NatDigit, y: NatDigit) -> NatDigit {
     }
 }
 
-pub fn _add_(x: NatDigit, y: NatDigit) -> NatDigit {
+pub fn _add_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_add(y).0
     } else {
@@ -61,7 +61,7 @@ pub fn _add_(x: NatDigit, y: NatDigit) -> NatDigit {
     }
 }
 
-pub fn _shl_(x: NatDigit, n: u32) -> NatDigit {
+pub fn _shl_(x: Digit, n: u32) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_shl(n).0
     } else {
@@ -69,7 +69,7 @@ pub fn _shl_(x: NatDigit, n: u32) -> NatDigit {
     }
 }
 
-pub fn _shr_(x: NatDigit, n: u32) -> NatDigit {
+pub fn _shr_(x: Digit, n: u32) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_shr(n).0
     } else {
@@ -78,7 +78,7 @@ pub fn _shr_(x: NatDigit, n: u32) -> NatDigit {
 }
 
 // returns (quotient, remainder)
-pub fn div64(hi: NatDigit, lo: NatDigit, divisor: NatDigit) -> (NatDigit, NatDigit) {
+pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
     assert!(divisor > 0, "div64 - divide by zero error");
     assert!(divisor > hi, "div64 - quotient overflow error");
 
@@ -91,10 +91,10 @@ pub fn div64(hi: NatDigit, lo: NatDigit, divisor: NatDigit) -> (NatDigit, NatDig
 
     let s: u32 = leading_zeroes_count(divisor);
     // normalize the divider by stripping away all leading zeroes from it.
-    let dn64: NatDigit = _shl_(divisor, s);
+    let dn64: Digit = _shl_(divisor, s);
     // break the divisor into two 32-bit digits (d1, d0) = y
-    let dn32_1: NatDigit = _shr_(dn64, 32);
-    let dn32_0: NatDigit = dn64 & MASK_32;
+    let dn32_1: Digit = _shr_(dn64, 32);
+    let dn32_0: Digit = dn64 & MASK_32;
 
     // 'hi' normalized 64 bits
     // 's' number of MSB zeroes are shifted out of 'hi' and filled with an equal number of MSB bits from 'lo')
@@ -110,19 +110,18 @@ pub fn div64(hi: NatDigit, lo: NatDigit, divisor: NatDigit) -> (NatDigit, NatDig
     };
     debug_assert_eq!(_lo_normalized_ideal_, lo_normalized);
 
-    let hn64: NatDigit = _shl_(hi, s) | lo_normalized;
+    let hn64: Digit = _shl_(hi, s) | lo_normalized;
     // 'lo' normalized 64 bits, destructured (ln32_1, ln32_0) = ln64
-    let ln64: NatDigit = _shl_(lo, s);
+    let ln64: Digit = _shl_(lo, s);
     // higher 32 bits of ln64
-    let ln32_1: NatDigit = _shr_(ln64, 32);
+    let ln32_1: Digit = _shr_(ln64, 32);
     // lower 32 bits of ln64
-    let ln32_0: NatDigit = ln64 & MASK_32;
+    let ln32_0: Digit = ln64 & MASK_32;
 
     // calculate q_hat
-    let mut q_hat_1: NatDigit = _div_(hn64, dn32_1);
-    let mut r_hat: NatDigit = _sub_(hn64, _mul_(q_hat_1, dn32_1));
+    let mut q_hat_1: Digit = _div_(hn64, dn32_1);
+    let mut r_hat: Digit = _sub_(hn64, _mul_(q_hat_1, dn32_1));
     while q_hat_1 >= BASE || _mul_(q_hat_1, dn32_0) > (_shl_(r_hat, 32) + ln32_1) {
-        eprintln!("01 loop triggered");
         q_hat_1 -= 1;
         r_hat = _add_(r_hat, dn32_1);
         if r_hat >= BASE {
@@ -133,11 +132,10 @@ pub fn div64(hi: NatDigit, lo: NatDigit, divisor: NatDigit) -> (NatDigit, NatDig
     // multiply and subtract, and decrease j by 1, all at once!
     // update the dividend; ln32_1 is the next 'digit' included in u
     let un21 = _sub_(_add_(_shl_(hn64, 32), ln32_1), _mul_(q_hat_1, dn64));
-    let mut q_hat_0: NatDigit = _div_(un21, dn32_1);
+    let mut q_hat_0: Digit = _div_(un21, dn32_1);
     r_hat = _sub_(un21, _mul_(q_hat_0, dn32_1));
 
     while q_hat_0 >= BASE || _mul_(q_hat_0, dn32_0) > _add_(_shl_(r_hat, 32), ln32_0) {
-        eprintln!("02 loop triggered");
         q_hat_0 -= 1;
         r_hat = _add_(r_hat, dn32_1);
         if r_hat >= BASE {
@@ -148,11 +146,11 @@ pub fn div64(hi: NatDigit, lo: NatDigit, divisor: NatDigit) -> (NatDigit, NatDig
             (_sub_(_add_(_shl_(un21, 32), ln32_0), _mul_(q_hat_0, dn64))) >> s)
 }
 
-fn leading_zeroes_count(x: NatDigit) -> u32 {
-    NatDigit::BITS - len_binary_digit(x)
+fn leading_zeroes_count(x: Digit) -> u32 {
+    Digit::BITS - len_binary_digit(x)
 }
 
-fn len_binary_digit(a: NatDigit) -> u32 {
+pub(crate) fn len_binary_digit(a: Digit) -> u32 {
     let mut len = 0;
     let mut x = a as usize;
     if x >= 1 << 32 {

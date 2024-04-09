@@ -1,9 +1,11 @@
 [package]
 name = "buckle"
-version = "0.1.0"
+authors = ["dp@w3pleb.org"]
+version = "0.0.1"
 edition = "2021"
 
+
 [build]
-rustflags="--cfg release_test"
+
 
 [dependencies]
