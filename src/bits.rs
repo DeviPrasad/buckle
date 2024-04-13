@@ -190,10 +190,19 @@ pub const LEN_8: [u8; 256] = [
 
 #[cfg(test)]
 mod bits_test {
+
+    use env_logger::Builder;
+    use log::{info, LevelFilter};
+    use chrono::{DateTime, Local};
     use crate::bits::div64;
+
+    fn init() {
+        crate::init_logger(true)
+    }
 
     #[test]
     fn bits_div64() {
+        init();
         {
             let (q, r) = div64(0, 65537, 1);
             assert_eq!(q, 65537, "quotient");
@@ -259,6 +268,8 @@ mod bits_test {
 
     #[test]
     fn print_64bit_shift() {
+        init();
+
         let v: u64 = 0xFFFF000000000000;
         println!("+--------------------------------------------------------------------------+");
         println!("|  i    j    bin_j     minus_i   mi & 63        sr               w         |");

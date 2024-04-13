@@ -1,7 +1,28 @@
 #[allow(unused_variables)]
 #[allow(dead_code)]
 
-pub type Digit = (u64);
+use std::io::Write;
+use chrono::Local;
+use env_logger::Builder;
+use log::LevelFilter;
+
+pub fn init_logger(is_test: bool) {
+    let _ = Builder::new()
+        .format(|buf, record| {
+            writeln!(buf,
+                     "{} [{}] - {}",
+                     Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                     record.level(),
+                     record.args()
+            )
+        })
+        .filter(None, LevelFilter::Info)
+        .is_test(is_test)
+        .format_timestamp_secs()
+        .try_init();
+}
+
+pub type Digit = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IntStrPadding {
@@ -16,7 +37,7 @@ pub enum IntStrCase {
 }
 
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Int {
     // Declared count of bits in the magnitude.
     pub(crate) cb: u32,
@@ -44,6 +65,5 @@ pub struct U128 {
     pub(crate) hi: Digit
 }
 
-mod nat;
+mod int;
 mod bits;
-
