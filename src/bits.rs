@@ -155,7 +155,7 @@ pub(crate) fn len_binary_digit(a: Digit) -> u32 {
     let mut x = a as usize;
     if x >= 1 << 32 {
         x >>= 32;
-        len = 32;
+        len += 32;
     }
     if x >= 1 << 16 {
         x >>= 16;

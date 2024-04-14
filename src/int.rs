@@ -1,7 +1,6 @@
 use std::cmp::{max, min, PartialEq};
 use std::env;
 use std::fmt::Formatter;
-use std::ops::{Add, Deref, Mul, Sub};
 
 use crate::{bits, Digit, Int, IntStrCase, IntStrPadding, U128};
 
@@ -12,7 +11,6 @@ impl std::fmt::Display for Int {
 }
 
 impl Int {
-    pub const BITS_IN_NAT_LIMB: u32 = Digit::BITS;
     pub const BIT_LEN_MIN: u32 = 1 * Digit::BITS;
     // Nat magnitude has at least one limb
     pub const BIT_LEN_MAX: u32 = 16 * 1024;
@@ -24,42 +22,28 @@ impl Int {
     pub const KARATSUBA_SQR_THRESHOLD: u32 = 40;
 
     fn sign_of(s: i32) -> i32 {
-        if s >= 0 {
-            1
-        } else {
-            -1
+        match s {
+            0..=i32::MAX => 1,
+            _ => -1
         }
     }
 
     fn check_len(cb: u32) {
-        debug_assert!(cb >= Int::BIT_LEN_MIN && cb <= Int::BIT_LEN_MAX, "Int::check_len - bad bit length {cb}");
-        #[cfg(release_test)]
+        #[cfg(any(debug_assertions, release_test))]
         assert!(cb >= Int::BIT_LEN_MIN && cb <= Int::BIT_LEN_MAX, "Int::check_len - bad bit length");
     }
 
     fn check_invariant(&self) {
-        debug_assert!(self.cb >= Int::BIT_LEN_MIN && self.cb <= Int::BIT_LEN_MAX,
-                      "Int::check_invariant - bad bit length");
-        debug_assert!(self.mag.len() as u32 == Int::exact_size(self.cb),
-                      "Int::check_invariant - announced Int size does not match with the magnitude");
-        debug_assert!(self.sign == 0 || self.sign == 1 || self.sign == -1, "Int::check_invariant - invalid sign");
-        debug_assert!((self.sign == 0 && (self.pos_lnzd == -1 && self.pos_lnzb == -1)) ||
-                          (self.sign != 0
-                              && (self.pos_lnzb >= 0 && self.pos_lnzb < 64)
-                              && (self.pos_lnzd >= 0 && self.pos_lnzd <= self.mag.len() as i32 - 1)),
-                      "Int::check_invariant - invalid sign, lnzd, or lnzb values");
-        let (pos_lnzd, pos_lnzb) = Int::pos_lnzd_lnzb(self.cb, &self.mag);
-        debug_assert_eq!(pos_lnzd, self.pos_lnzd, "Int::check_invariant - bad pos_lnzd value");
-        debug_assert_eq!(pos_lnzb, self.pos_lnzb, "Int::check_invariant - bad pos_lnzb value");
-        #[cfg(release_test)]
+        #[cfg(any(debug_assertions, release_test))]
         {
+            let (pos_lnzd, pos_lnzb) = Int::pos_lnzd_lnzb(self.cb, &self.mag);
             assert!(self.cb >= Int::BIT_LEN_MIN && self.cb <= Int::BIT_LEN_MAX,
                     "Int::check_invariant - bad bit length");
-            assert!(self.mag.len() as u32 == Int::exact_size(self.cb),
-                    "Int::check_invariant - announced Int size does not match with the magnitude");
+            assert_eq!(self.mag.len() as u32, Int::exact_size(self.cb), "Int::check_invariant - announced Int size does not match with the magnitude");
             assert!(self.sign == 0 || self.sign == 1 || self.sign == -1, "Int::check_invariant - invalid sign");
             assert!((self.sign == 0 && (self.pos_lnzd == -1 && self.pos_lnzb == -1)) ||
-                        (self.sign != 0 && (self.pos_lnzb >= 0 && self.pos_lnzb < 64)
+                        (self.sign != 0
+                            && (self.pos_lnzb >= 0 && self.pos_lnzb < 64)
                             && (self.pos_lnzd >= 0 && self.pos_lnzd <= self.mag.len() as i32 - 1)),
                     "Int::check_invariant - invalid sign, lnzd, or lnzb values");
             assert_eq!(pos_lnzd, self.pos_lnzd, "Int::check_invariant - bad pos_lnzd value");
@@ -108,6 +92,10 @@ impl Int {
         n
     }
 
+    fn set_invariants(&mut self, sign: i32) -> &Self {
+        self.fix_invariants(sign)
+    }
+
     fn fix_invariants(&mut self, sign: i32) -> &Self {
         let (pos_lnzd, pos_lnzb) = Self::pos_lnzd_lnzb(self.cb, &self.mag);
         self.pos_lnzd = pos_lnzd;
@@ -153,20 +141,20 @@ impl Int {
 
     pub fn new_from_parts(bit_len: u32, mag: Vec<Digit>, sign: i32) -> Self {
         let bl = min(max(bit_len, Int::BIT_LEN_MIN), Int::BIT_LEN_MAX);
-        let mut int = Int::new(bl);
-        for (d, s) in int.mag.iter_mut().zip(mag.iter()) {
+        let mut res = Int::new(bl);
+        for (d, s) in res.mag.iter_mut().zip(mag.iter()) {
             *d = *s;
         }
-        int.fix_invariants(sign);
-        int
+        res.fix_invariants(sign);
+        res
     }
 
     pub fn new_digit(bit_len: u32, val: Digit) -> Self {
-        let mut int = Self::new(bit_len);
-        int.mag[0] = val;
-        int.fix_invariants(1);
-        assert!((val > 0 && int.pos_lnzd >= 0) || (val == 0 && int.pos_lnzd == -1));
-        int
+        let mut res = Self::new(bit_len);
+        res.mag[0] = val;
+        res.fix_invariants(1);
+        res.check_invariant();
+        res
     }
 
     pub fn zero(bit_len: u32) -> Self {
@@ -178,34 +166,25 @@ impl Int {
     }
 
     pub fn from_le_digits_vec(digits: Vec<Digit>, sign: i32) -> Self {
-        debug_assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize);
-        #[cfg(release_test)]
+        #[cfg(any(debug_assertions, release_test))]
         assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize);
         let bit_len: u32 = digits.len() as u32 * Digit::BITS;
-        let mut int = Int::new_from_parts(bit_len, digits, sign);
-        int.fix_invariants(sign);
-        int.check_invariant();
-        int
+        let res = Int::new_from_parts(bit_len, digits, sign);
+        res.check_invariant();
+        res
     }
 
+    // number of bits of magnitude may be less than the bit_len
     pub fn from_le_digits_with_capacity(bit_len: u32, digits: Vec<Digit>, sign: i32) -> Self {
-        debug_assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize,
-                      "from_le_digits_with_capacity - too few or too many digits ({}) in the number", digits.len());
-        debug_assert!(Self::exact_size(bit_len) as usize >= digits.len(),
-                      "from_le_digits_with_capacity - bit length capacity {} smaller than digits {}",
-                      Self::exact_size(bit_len), digits.len());
-        #[cfg(release_test)]
-        {
-            assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize,
-                    "from_le_digits_with_capacity - too few or too many digits ({}) in the number", digits.len());
-            assert!(Self::exact_size(bit_len) as usize >= digits.len(),
-                    "from_le_digits_with_capacity - bit length capacity {} smaller than digits {}",
-                    Self::exact_size(bit_len), digits.len());
-        }
-        let mut int = Int::new_from_parts(bit_len, digits, sign);
-        int.fix_invariants(sign);
-        int.check_invariant();
-        int
+        #[cfg(any(debug_assertions, release_test))]
+        assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize,
+                "from_le_digits_with_capacity - too few or too many digits ({}) in the number", digits.len());
+        assert!(Self::exact_size(bit_len) as usize >= digits.len(),
+                "from_le_digits_with_capacity - bit length capacity {} smaller than digits {}",
+                Self::exact_size(bit_len), digits.len());
+        let res = Int::new_from_parts(bit_len, digits, sign);
+        res.check_invariant();
+        res
     }
 
     pub fn resize(&self, new_len: u32) -> Int {
@@ -215,44 +194,44 @@ impl Int {
         if self_len == new_len || new_len == 0 || new_len > Self::BIT_LEN_MAX {
             self.clone()
         } else if self.cb < new_len {
-            /* grow */
-            let mut larger_nat = Int::new(new_len);
-            for (dst, src) in larger_nat.mag.iter_mut().zip(&self.mag[0..self_len as usize]) {
+            // need more space to hold digits of a larger magnitude
+            let mut lm = vec![0; new_size];
+            for (dst, src) in lm.iter_mut().zip(&self.mag[0..]) {
                 *dst = *src;
             }
-            larger_nat.fix_invariants(1);
+            let larger_nat = Int::new_from_parts(new_len, lm, self.sign);
             larger_nat.check_invariant();
-            assert_eq!(new_size, larger_nat.mag.len());
             larger_nat
-        } else /* self.bits > new_len */ {
-            /* shrink */
-            let mut smaller_nat = Int::new(new_len);
+        } else {
+            // shrink the size of the magnitude
+            let mut sm = vec![0; new_size];
             // 'copy_from_slice' panics if the source and destination lengths are not equal
-            smaller_nat.mag.copy_from_slice(&self.mag[0..new_size]);
-            smaller_nat.fix_invariants(smaller_nat.sign);
+            sm.copy_from_slice(&self.mag[0..new_size]);
+            let smaller_nat = Int::new_from_parts(new_len, sm, self.sign);
+            // smaller_nat.fix_invariants(smaller_nat.sign);
             smaller_nat.check_invariant();
-            assert_eq!(new_size, smaller_nat.mag.len());
             smaller_nat
         }
     }
 
-    pub fn expand_mut(mut self, new_bit_len: u32) -> Self {
-        self.check_invariant();
-        if self.cb < new_bit_len {
-            self.cb = new_bit_len;
-            self.mag.resize(Self::exact_size(new_bit_len) as usize, 0);
+    pub fn count_ones(&self) -> u32 {
+        let mut c = 0;
+        for d in self.mag.iter() {
+            c += d.count_ones();
         }
-        self.fix_invariants(self.sign);
-        self.check_invariant();
-        self
+        c
+    }
+
+    pub fn pow2(&self) -> bool {
+        self.count_ones() == 1 && self.mag[0] != 1
     }
 
     fn inverse(&self, _n: &Int) -> Int {
-        panic!("inverse - no implementation")
+        panic!("inverse - not implemented!")
     }
 
     fn sqrt(&self) -> Int {
-        panic!("sqrt - no implementation")
+        panic!("sqrt - not implemented!")
     }
 
     fn min(&self, n2: &Self) -> Int {
@@ -282,85 +261,61 @@ impl Int {
 
     fn lt(&self, n2: &Self) -> bool {
         self.check_invariant();
-        let (_, s) = Int::resize_and_sub(self, n2);
+        let (_, s) = Int::resize_sub(self, n2);
         s < 0
     }
 
     fn le(&self, n2: &Self) -> bool {
         self.check_invariant();
-        let (_, s) = Int::resize_and_sub(self, n2);
+        let (_, s) = Int::resize_sub(self, n2);
         s <= 0
     }
 
     fn gt(&self, n2: &Self) -> bool {
         self.check_invariant();
-        let (_, s) = Int::resize_and_sub(self, n2);
+        let (_, s) = Int::resize_sub(self, n2);
         s > 0
     }
 
     fn ge(&self, n2: &Self) -> bool {
         self.check_invariant();
-        let (_, s) = Int::resize_and_sub(self, n2);
+        let (_, s) = Int::resize_sub(self, n2);
         s >= 0
     }
 
     pub fn add(&self, n2: &Int) -> (Int, Digit) {
         let n1 = self;
+        #[cfg(any(debug_assertions, release_test))]
+        assert_eq!(n1.bits_len(), n2.bits_len(), "add {} >= {}", n1.bits_len(), n2.bits_len());
         n1.check_invariant();
         n2.check_invariant();
-        // debug_assert!(n1.bits_len() == n2.bits_len(), "add {} != {}", n1.bits_len(), n2.bits_len());
-        // #[cfg(release_test)]
-        // assert!(n1.bits_len() == n2.bits_len(), "rut: add {} >= {}", n1.bits_len(), n2.bits_len());
         let mut carry: Digit = 0;
-        let mut res = Int::new(n1.bits_len());
+        let mut mag = vec![0; Int::exact_size(n1.bits_len()) as usize];
         n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
-            let limb_sum: Digit;
-            (limb_sum, carry) = bits::add_with_carry(x, y, carry);
-            res.mag[i] = limb_sum;
+            (mag[i], carry) = bits::add_with_carry(x, y, carry);
         });
-        res.fix_invariants(1);
+        let res = Int::new_from_parts(n1.bits_len(), mag, 1);
         res.check_invariant();
         (res, carry)
     }
 
     pub fn sum(&self, n2: &Int) -> Int {
-        let n1 = self;
-        n1.check_invariant();
-        n2.check_invariant();
-        debug_assert!(n1.bits_len() == n2.bits_len(), "sum {} != {}", n1.bits_len(), n2.bits_len());
-        //let res_msb_pos: usize = max(n1.bits_len(), n2.bits_len()) as usize;
-        #[cfg(release_test)]
-        assert!(n1.bits_len() == n2.bits_len(), "rut: sum {} >= {}", n1.bits_len(), n2.bits_len());
-        let mut carry: Digit = 0;
-        let mut res = Int::new(n1.bits_len()); // has provision for the potential carry
-        for (i, (&x, &y)) in n1.mag.iter().zip(n2.mag.iter()).enumerate() {
-            (res.mag[i], carry) = bits::add_with_carry(x, y, carry);
-        }
-        // TODO: what to do with the carry? Ignore?
-        // res.mag[res_msb_pos] = carry;
-        res.fix_invariants(1);
-        res.check_invariant();
-        res
+        self.add(&n2).0
     }
 
     pub fn resize_sum(&self, t: &Int) -> Int {
-        log::info!("resize_and_sum - enter\n\tself = {self}\n\tt = {t}");
         let res_bit_len = max(self.bits_len(), t.bits_len());
         let r = if self.bits_len() < res_bit_len {
-            log::info!("\tcase 1");
             Int::sum(&self.resize(res_bit_len), &t)
         } else if t.bits_len() < res_bit_len {
-            log::info!("\tcase 2");
             Int::sum(self, &t.resize(res_bit_len))
         } else {
-            log::info!("\tcase 3");
             Int::sum(self, t)
         };
-        log::info!("\tsum = {r}\nresize_and_sum - leave\n");
         r
     }
 
-    pub fn resize_and_add(&self, t: &Int) -> (Int, Digit) {
+    pub fn resize_add(&self, t: &Int) -> (Int, Digit) {
         let res_bit_len = max(self.bits_len(), t.bits_len());
         if self.bits_len() < res_bit_len {
             Int::add(&self.resize(res_bit_len), &t)
@@ -371,7 +326,7 @@ impl Int {
         }
     }
 
-    pub fn resize_and_sub(s: &Int, t: &Int) -> (Int, i64) {
+    pub fn resize_sub(s: &Int, t: &Int) -> (Int, i64) {
         let res_bit_len = max(s.bits_len(), t.bits_len());
         if s.bits_len() < res_bit_len {
             Int::sub(&s.resize(res_bit_len), t)
@@ -382,7 +337,7 @@ impl Int {
         }
     }
 
-    pub fn resize_and_sub_abs(s: &Int, t: &Int) -> (Int, i32) {
+    pub fn resize_abs_sub(s: &Int, t: &Int) -> (Int, i64) {
         let res_bit_len = max(s.bits_len(), t.bits_len());
         if s.bits_len() < res_bit_len {
             Int::sub_abs(&s.resize(res_bit_len), t)
@@ -401,27 +356,26 @@ impl Int {
         assert!(n1.bits_len() == n2.bits_len(), "rut: sub {} >= {}", n1.bits_len(), n2.bits_len());
         let mut borrow: Digit = 0;
         let mut mag_diff: Digit = 0; // will stay zero when x.mag == y.mag
-        let mut res = Int::new(n1.bits_len());
+        let mut mag = vec![0; Int::exact_size(n1.bits_len()) as usize];
         n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
-            let limb_diff: Digit; // diff between each corresponding limbs of x and y
-            (limb_diff, borrow) = bits::sub_with_borrow(x, y, borrow);
-            mag_diff |= limb_diff;
-            res.mag[i] = limb_diff;
+            let diff: Digit; // diff between each corresponding limbs of x and y
+            (diff, borrow) = bits::sub_with_borrow(x, y, borrow);
+            mag_diff |= diff;
+            mag[i] = diff;
         });
         let d: i64 = match mag_diff {
             0 => 0,
             _ => 1
         };
-        res.fix_invariants(1);
+        let res = Int::new_from_parts(n1.bits_len(), mag, 1);
         res.check_invariant();
         (res, (-(borrow as i64)) | d)
     }
 
     // subtract two magnitudes. Indicate the sign too.
-    pub fn sub_abs(&self, n2: &Int) -> (Int, i32) {
-        log::info!("sub_abs - enter");
+    pub fn sub_abs(&self, n2: &Int) -> (Int, i64) {
         let n1 = self;
-        log::info!("\tn1 = {n1}\n\tn2 = {n2}");
+        // log::info!("\tn1 = {n1}\n\tn2 = {n2}");
         n1.check_invariant();
         n2.check_invariant();
         debug_assert!(n1.bits_len() == n2.bits_len(), "sub_abs {} != {}", n1.bits_len(), n2.bits_len());
@@ -436,25 +390,23 @@ impl Int {
             } else {
                 (n2, n1, -1)
             };
-        let mut res = Int::new(n1.bits_len());
+        let mut mag = vec![0; Int::exact_size(n1.bits_len()) as usize];
         n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
-            let limb_diff: Digit; // diff between each corresponding limbs of x and y
-            (limb_diff, borrow) = bits::sub_with_borrow(x, y, borrow);
-            mag_diff |= limb_diff;
-            res.mag[i] = limb_diff;
+            let diff: Digit; // diff between each corresponding limbs of x and y
+            (diff, borrow) = bits::sub_with_borrow(x, y, borrow);
+            mag_diff |= diff;
+            mag[i] = diff;
         });
-        res.fix_invariants(1);
+        let res = Int::new_from_parts(n1.bits_len(), mag, 1);
         res.check_invariant();
-        log::info!("\t(res, sign) = ({res}, {sign})");
-        log::info!("sub_abs - leave");
         (res, sign)
     }
 
     // acc += n * x
     pub fn add_mul_row(&self, x: Digit, acc: &mut [Digit]) -> Digit {
-        debug_assert_eq!(self.mag.len(), acc.len(), "add_mul_row - length mismatch.");
-        #[cfg(release_test)]
-        assert_eq!(self.mag.len(), acc.len(), "add_mul_row - length mismatch.");
+        debug_assert_eq!(self.digits_len(), acc.len() as u32, "add_mul_row - length mismatch.");
+        #[cfg(any(debug_assertions, release_test))]
+        assert_eq!(self.digits_len(), acc.len() as u32, "add_mul_row - length mismatch.");
         let mut carry: Digit = 0;
         for (i, &a) in self.mag.iter().enumerate() {
             let a_mul_b: U128 = bits::mul64(a, x);
@@ -468,8 +420,19 @@ impl Int {
     }
 
     // elementary school-book multiplication
-    //
-    pub fn mul_base_case(n1: &Int, n2: &Int) -> Int {
+    // TODO: optimize when at least one of the arguments is 2^N
+    pub fn mul(&self, n2: &Int) -> Int {
+        Self::multiply_base_case(&self, n2)
+    }
+
+    pub fn mul_karatsuba(&self, n2: &Int) -> Int {
+        let mut prod = Self::multiply_karatsuba(&self, n2);
+        prod.truncate(self.digits_len() + n2.digits_len(), self.sign * n2.sign);
+        prod.check_invariant();
+        prod
+    }
+
+    pub fn multiply_base_case(n1: &Int, n2: &Int) -> Int {
         n1.check_invariant();
         n2.check_invariant();
 
@@ -514,7 +477,7 @@ impl Int {
         }
     }
 
-    pub fn mul_karatsuba(n1: &Int, n2: &Int) -> Int {
+    pub fn multiply_karatsuba(n1: &Int, n2: &Int) -> Int {
         n1.check_invariant();
         n2.check_invariant();
 
@@ -524,19 +487,17 @@ impl Int {
         let (a0, a1) = n1.split_digits(k);
         let (b0, b1) = n2.split_digits(k);
 
-        let c0 = a0.mul(&b0);
-        let c1 = a1.mul(&b1);
-        log::info!("mul_karatsuba:\n\ta0 = {},\n\tb0 = {}\n\tc0 = {}", a0, b0, c0);
-        log::info!("mul_karatsuba:\n\ta1 = {},\n\tb1 = {}\n\tc1 = {}", a1, b1, c1);
+        let c0 = a0.multiply(&b0);
+        let c1 = a1.multiply(&b1);
+        // log::info!("mul_karatsuba:\n\ta0 = {},\n\tb0 = {}\n\tc0 = {}", a0, b0, c0);
+        // log::info!("mul_karatsuba:\n\ta1 = {},\n\tb1 = {}\n\tc1 = {}", a1, b1, c1);
 
-        let (c2_a, sign_a) = Int::resize_and_sub_abs(&a0, &a1);
-        let (c2_b, sign_b) = Int::resize_and_sub_abs(&b0, &b1);
-        let c2: Int = c2_a.mul(&c2_b);
-        log::info!("mul_karatsuba:\n\tc2_a = {c2_a},\n\tc2_b = {c2_b}\n\tc2 = {c2}");
+        let (c2_a, sign_a) = Int::resize_abs_sub(&a0, &a1);
+        let (c2_b, sign_b) = Int::resize_abs_sub(&b0, &b1);
+        let c2: Int = c2_a.multiply(&c2_b);
+        // log::info!("mul_karatsuba:\n\tc2_a = {c2_a},\n\tc2_b = {c2_b}\n\tc2 = {c2}");
 
-        // let base_pow_k = Int::new_digit(64, 1).shl_expand(64 * k);
         let base_pow_k = Int::new_digit(64 * k + 1, 0).set_bit_mut(64 * k);
-        // let base_pow_2k = Int::new_digit(64, 1).shl_expand(64 * 2 * k);
         let base_pow_2k = Int::new_digit(64 * 2 * k + 1, 0).set_bit_mut(64 * 2 * k);
         let c1_mul_base_pow_2k = c1.mul(&base_pow_2k);
         let c0_plus_c1 = c0.resize_sum(&c1);
@@ -546,9 +507,8 @@ impl Int {
             c0.resize_sum(&c0_plus_c1_minus_c2.mul(&base_pow_k)).resize_sum(&c1_mul_base_pow_2k)
         } else {
             let c0_plus_c1_plus_c2 = c0_plus_c1.sum(&c2);
-            c0.resize_sum(&c0_plus_c1_plus_c2.mul(&base_pow_k)).resize_sum(&c1_mul_base_pow_2k)
+            c0.resize_sum(&c0_plus_c1_plus_c2.multiply(&base_pow_k)).resize_sum(&c1_mul_base_pow_2k)
         };
-        prod.truncate(n1_len + n2_len, n1.sign * n2.sign);
         prod.check_invariant();
         prod
     }
@@ -560,19 +520,22 @@ impl Int {
         self.check_invariant();
     }
 
-    pub fn mul(&self, n2: &Int) -> Int {
+    pub fn multiply(&self, n2: &Int) -> Int {
         let n1 = self;
         n1.check_invariant();
         n2.check_invariant();
         // debug_assert!(n1.bits_len() == n2.bits_len(), "mul {} != {}", n1.bits_len(), n2.bits_len());
         let xl = n1.digits_len();
         let yl = n2.digits_len();
-        if xl < Int::KARATSUBA_MUL_THRESHOLD || yl < Int::KARATSUBA_MUL_THRESHOLD {
+        let mut prod = if xl < Int::KARATSUBA_MUL_THRESHOLD || yl < Int::KARATSUBA_MUL_THRESHOLD {
             // if xl < Nat::KARATSUBA_MUL_THRESHOLD - 18 || yl < Nat::KARATSUBA_MUL_THRESHOLD - 18 {
-            Self::mul_base_case(&n1, &n2)
+            Self::multiply_base_case(&n1, &n2)
         } else {
-            Self::mul_karatsuba(&n1, &n2)
-        }
+            Self::multiply_karatsuba(&n1, &n2)
+        };
+        prod.truncate(xl + yl, n1.sign * n2.sign);
+        prod.check_invariant();
+        prod
     }
 
     pub fn div(&self, _n: &Int) -> Int {
@@ -612,31 +575,29 @@ impl Int {
         debug_assert!(pos < self.bits_len(), "test_bit {pos} >= {:?}", self.bits_len());
         #[cfg(release_test)]
         assert!(pos < self.bits_len(), "rut: test_bit {pos} >= {:?}", self.bits_len());
-        let (l, p) = (pos / Int::BITS_IN_NAT_LIMB, pos % Int::BITS_IN_NAT_LIMB);
+        let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] & (1 << p) != 0
     }
 
     fn set_bit(&self, pos: u32) -> Int {
         self.check_invariant();
+        #[cfg(any(debug_assertions, release_test))]
         debug_assert!(pos < self.bits_len(), "set_bit {pos} >= {:?}", self.bits_len());
-        #[cfg(release_test)]
-        assert!(pos < self.bits_len(), "rut: set_bit {pos} >= {:?}", self.bits_len());
         self.clone().set_bit_mut(pos)
     }
 
     fn shl(&self, count: u32) -> Int {
         self.check_invariant();
-        debug_assert!(count <= self.bits_len(), "shl {count} > {}", self.bits_len());
-        #[cfg(release_test)]
-        assert!(count <= self.bits_len(), "rut: shl {count} >= {}", self.bits_len());
-
+        #[cfg(any(debug_assertions, release_test))]
+        assert!(count <= self.bits_len(), "shl {count} > {}", self.bits_len());
         let mut r = self.clone();
+        let cd = r.digits_len() as usize;
         let mut count = count;
         // iteratively left-shift bits; each iteration can deal with only Digit::BITS at a time.
         while count > 0 {
             // number of bits to be lef-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for i in (1_usize..=r.mag.len() - 1).rev() {
+            for i in (1..cd).rev() {
                 // we need to be careful about the corner case where c == 64.
                 r.mag[i] = (r.mag[i] << (c - 1) << 1) | (r.mag[i - 1] >> Digit::BITS - c);
             }
@@ -658,7 +619,7 @@ impl Int {
         while count > 0 {
             // number of bits to be lef-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for i in (1_usize..r.mag.len()).rev() {
+            for i in (1_usize..r.digits_len() as usize).rev() {
                 // we need to be careful about the corner case where c == 64.
                 let d = (r.mag[i] << (c - 1) << 1) | (r.mag[i - 1] >> Digit::BITS - c);
                 r.mag[i] = d;
@@ -674,10 +635,9 @@ impl Int {
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {
         self.check_invariant();
-        debug_assert!(pos < self.bits_len(), "set_bit_mut {pos} >= {:?}", self.bits_len());
-        let (l, p) = (pos / Int::BITS_IN_NAT_LIMB, pos % Int::BITS_IN_NAT_LIMB);
-        #[cfg(release_test)]
-        assert!(pos < self.bits_len(), "rut: set_bit_mut {pos} >= {:?}", self.bits_len());
+        #[cfg(any(debug_assertions, release_test))]
+        assert!(pos < self.bits_len(), "set_bit_mut {pos} >= {:?}", self.bits_len());
+        let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= 1 << p;
         self.fix_invariants(self.sign);
         self.check_invariant();
@@ -812,11 +772,11 @@ mod test {
         assert_eq!(n256.bits_len(), 256);
         let n4096 = n256.resize(4096);
         assert_eq!(n4096.bits_len(), 4096);
-        assert_eq!(n4096.mag.len(), Int::exact_size(4096) as usize);
+        assert_eq!(n4096.digits_len(), Int::exact_size(4096));
         assert_eq!(n1024.bits_len(), 1024);
-        assert_eq!(n1024.mag.len(), Int::exact_size(1024) as usize);
+        assert_eq!(n1024.digits_len(), Int::exact_size(1024));
         assert_eq!(n256.bits_len(), 256);
-        assert_eq!(n256.mag.len(), Int::exact_size(256) as usize);
+        assert_eq!(n256.digits_len(), Int::exact_size(256));
     }
 
     #[test]
@@ -924,10 +884,10 @@ mod test {
         }
         // new number's size > mag.len()
         {
-            let nat = Int::new_from_parts(4096, mag.clone(), 1);
-            assert_eq!(nat.bits_len(), 4096);
-            assert_eq!(nat.digits_len(), Int::exact_size(4096));
-            assert_eq!(&nat.mag[0..mag.len()], vec![val; mag.len()])
+            let n = Int::new_from_parts(4096, mag.clone(), 1);
+            assert_eq!(n.bits_len(), 4096);
+            assert_eq!(n.digits_len(), Int::exact_size(4096));
+            assert_eq!(&n.mag[0..mag.len() as usize], vec![val; mag.len()])
         }
     }
 
@@ -936,14 +896,12 @@ mod test {
         {
             let n96_x = Int::new_digit(96, 0xEEEE000011110000);
             assert_eq!(n96_x.hex_str(&IntStrCase::Upper, &IntStrPadding::Full), "0x0000000000000000EEEE000011110000");
-            ///*
             let n96_x = n96_x.set_bit_mut(95);
             assert_eq!(n96_x.hex_str(&IntStrCase::Upper, &IntStrPadding::Full), "0x0000000080000000EEEE000011110000");
             let n96_x = n96_x.set_bit_mut(94);
             assert_eq!(n96_x.hex_str(&IntStrCase::Lower, &IntStrPadding::Full), "0x00000000c0000000eeee000011110000".to_lowercase());
             assert_eq!(n96_x.hex_str(&IntStrCase::Lower, &IntStrPadding::Minimal), "0xc0000000eeee000011110000");
             assert_eq!(n96_x.hex_str(&IntStrCase::Lower, &IntStrPadding::Minimal), "0xc0000000eeee000011110000");
-            //*/
         }
         {
             let mut n64_x = Int::new_digit(64, 0xEEEE000011110000);
@@ -958,25 +916,25 @@ mod test {
         {
             let x256 = Int::from_le_digits_with_capacity(128, vec![0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF], 1);
             let y128 = Int::new_digit(64, 0);
-            let prod_mul = Int::mul(&x256, &y128);
+            let prod_mul = Int::multiply(&x256, &y128);
             assert_eq!(prod_mul.mag, [0, 0, 0]);
-            let prod_mul_karatsuba = Int::mul_karatsuba(&x256, &y128);
-            assert_eq!(prod_mul_karatsuba.mag[0..prod_mul.mag.len()], [0, 0, 0]);
+            let prod_mul_karatsuba = x256.mul_karatsuba(&y128);
+            assert_eq!(prod_mul_karatsuba.mag[0..prod_mul.digits_len() as usize], [0, 0, 0]);
         }
         {
             let x128 = Int::from_le_digits_with_capacity(128, vec![7, 8], 1);
             let y128 = Int::new_digit(64, 1);
-            let prod_mul = Int::mul(&x128, &y128);
+            let prod_mul = Int::multiply(&x128, &y128);
             assert_eq!(prod_mul.mag, [7, 8, 0]);
-            let prod_mul_karatsuba = Int::mul_karatsuba(&x128, &y128);
-            assert_eq!(prod_mul_karatsuba.mag[0..prod_mul.mag.len()], [7, 8, 0]);
+            let prod_mul_karatsuba = x128.mul_karatsuba(&y128);
+            assert_eq!(prod_mul_karatsuba.mag[0..prod_mul.digits_len() as usize], [7, 8, 0]);
         }
         {
             let x128 = Int::from_le_digits_with_capacity(129, vec![0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF], 1);
             let y128 = Int::new_digit(64, 2);
-            let prod_mul = Int::mul(&x128, &y128);
+            let prod_mul = Int::multiply(&x128, &y128);
             assert_eq!(prod_mul.mag[0..3], [0xfffffffffffffffe, 0xffffffffffffffff, 1]);
-            let prod_mul_karatsuba = Int::mul_karatsuba(&x128, &y128);
+            let prod_mul_karatsuba = &x128.mul_karatsuba(&y128);
             assert_eq!(prod_mul_karatsuba.mag[0..3], [0xfffffffffffffffe, 0xffffffffffffffff, 1]);
         }
     }
@@ -984,36 +942,35 @@ mod test {
     #[test]
     fn int_karatsuba_mul_128() {
         {
-            // let x128 = Int::new_digit(128, 0xFFFF000000050003);
             let x128 = Int::new_digit(128, 7);
             let y128 = Int::new_digit(128, 3);
-            let prod = Int::mul_karatsuba(&x128, &y128);
+            let prod = x128.mul_karatsuba(&y128);
             assert_eq!(prod.mag, [21, 0, 0, 0]);
-            let prod_book = Int::mul(&x128, &y128);
+            let prod_book = x128.mul_karatsuba(&y128);
             assert_eq!(prod_book.mag[0..4], [21, 0, 0, 0]);
         }
         {
             let x128 = Int::new_digit(128, 0xFFFF000000050003);
             let y128 = Int::new_digit(128, 1);
-            let prod = Int::mul_karatsuba(&x128, &y128);
+            let prod = x128.mul_karatsuba(&y128);
             assert_eq!(prod.mag, [0xFFFF000000050003, 0, 0, 0]);
-            let prod_book = Int::mul(&x128, &y128);
+            let prod_book = x128.mul_karatsuba(&y128);
             assert_eq!(prod_book.mag[0..4], [0xFFFF000000050003, 0, 0, 0]);
         }
         {
             let x128 = Int::new_digit(128, 0xFFFF000000050003);
             let y128 = Int::new_digit(128, 2);
-            let prod = Int::mul_karatsuba(&x128, &y128);
+            let prod = x128.mul_karatsuba(&y128);
             assert_eq!(prod.mag, [0xFFFE0000000A0006, 1, 0, 0]);
-            let prod_book = Int::mul(&x128, &y128);
+            let prod_book = x128.mul_karatsuba(&y128);
             assert_eq!(prod_book.mag[0..4], [0xFFFE0000000A0006, 1, 0, 0]);
         }
         {
             let x128 = Int::new_digit(128, 0xFFFF000000050003);
             let y128 = Int::new_digit(128, 0xFFFFFFFF00000000);
-            let prod = Int::mul_karatsuba(&x128, &y128);
+            let prod = x128.mul_karatsuba(&y128);
             assert_eq!(prod.mag, [0xFFFAFFFD00000000, 0xFFFEFFFF00060002, 0, 0]);
-            let prod_book = Int::mul(&x128, &y128);
+            let prod_book = x128.mul_karatsuba(&y128);
             assert_eq!(prod_book.mag[0..4], [0xFFFAFFFD00000000, 0xFFFEFFFF00060002, 0, 0]);
         }
     }
@@ -1051,12 +1008,12 @@ mod test {
                 0xeeeeeeeeffffffff,
             ], 1);
 
-        let prod576_karatsuba = Int::mul_karatsuba(&x448, &y128);
-        assert_eq!(prod576_karatsuba.mag.len(), expected576.mag.len());
+        let prod576_karatsuba = x448.mul_karatsuba(&y128);
+        assert_eq!(prod576_karatsuba.digits_len(), expected576.digits_len());
         assert_eq!(prod576_karatsuba.mag, expected576.mag);
 
-        let prod_base_case = Int::mul(&x448, &y128);
-        assert_eq!(prod_base_case.mag.len(), expected576.mag.len());
+        let prod_base_case = Int::multiply(&x448, &y128);
+        assert_eq!(prod_base_case.digits_len(), expected576.digits_len());
         assert_eq!(prod_base_case.mag[0..8], expected576.mag[0..8]);
     }
 
@@ -1065,38 +1022,38 @@ mod test {
         {
             let n256_x = Int::new_digit(256, 0xFFFF000000050003);
             let n256_y = Int::new_digit(256, 1);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [0xFFFF000000050003, 0, 0, 0, 0, 0, 0, 0]);
         }
         {
             let n256_x = Int::new_digit(256, 0xFFFF000000050003);
             let n256_y = Int::new_digit(256, 2);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [0xfffe0000000a0006, 1, 0, 0, 0, 0, 0, 0]);
         }
         {
             let n256_x = Int::new_digit(256, 0xFFFF000000050003);
             let n256_y = Int::new_digit(256, 0xFFFF000000000000);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [0xfffd000000000000, 0xfffe00010004fffd, 0, 0, 0, 0, 0, 0]);
         }
         {
             let n256_x = Int::new_digit(256, 0xFFFFFFFFFFFFFFFF);
             let n256_y = Int::new_digit(256, 0xFFFFFFFFFFFFFFFF);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [1, 0xFFFFFFFFFFFFFFFE, 0, 0, 0, 0, 0, 0]);
         }
         {
             let mut n256_x = Int::from_le_digits_vec(vec![0xFFFFFFFFFFFFFFFF, 0xF, 0, 0], 1);
             let n256_y = Int::from_le_digits_vec(vec![0xFFFFFFFFFFFFFFFF, 0xF, 0, 0], 1);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [1, 0xffffffffffffffe0, 0xff, 0, 0, 0, 0, 0]);
         }
         {
             let digits = vec![0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF];
             let n256_x = Int::from_le_digits_vec(digits.clone(), 1);
             let n256_y = Int::from_le_digits_vec(digits.clone(), 1);
-            let prod = n256_x.mul(&n256_y);
+            let prod = n256_x.multiply(&n256_y);
             assert_eq!(prod.mag, [
                 1, 0, 0, 0,
                 0xfffffffffffffffe, 0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff
@@ -1109,7 +1066,7 @@ mod test {
         {
             let n256_x = Int::new_digit(256, 0xFFFF000000050003);
             let n512_y = Int::new_digit(2037, 0xFFFFFFFF00000000);
-            let prod = n256_x.mul(&n512_y);
+            let prod = n256_x.multiply(&n512_y);
             assert_eq!(prod.mag[0..2], [0xFFFAFFFD00000000, 0xFFFEFFFF00060002]);
             let cd = Int::exact_size(2037 + 256);
             assert_eq!(prod.mag[2..], vec![0; cd as usize - 2]);
@@ -1122,16 +1079,11 @@ mod test {
             let x128 = Int::new_digit(128, 0xFFFF000000050003);
             assert_eq!(x128.digits_len(), 2);
             assert_eq!(x128.mag, [0xFFFF000000050003, 0]);
-
             let n2 = x128.shl(64);
             assert_eq!(n2.digits_len(), 2);
             assert_eq!(n2.mag, [0, 0xFFFF000000050003]);
             let n2 = n2.shl(64);
             assert_eq!(n2.mag, [0, 0]);
-
-            let n2 = x128.shl(128);
-            assert_eq!(n2.mag, [0, 0]);
-
             let n2 = x128.shl(126);
             assert_eq!(n2.mag, [0, 0xFFFF000000050003 << 62]);
         }
@@ -1148,6 +1100,8 @@ mod test {
             assert_eq!(n2.mag, [0, 0, 0, 0x8000000000000000]);
             let n2 = x128.shl(256);
             assert_eq!(n2.mag, [0, 0, 0, 0]);
+            let n2 = x128.shl(128);
+            assert_eq!(n2.mag, [0, 0, 1, 0]);
         }
     }
 }
