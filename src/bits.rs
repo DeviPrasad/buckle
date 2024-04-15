@@ -29,6 +29,10 @@ pub fn mul64(x: Digit, y: Digit) -> U128 {
     U128 { lo: r2 as Digit, hi: (r2 >> 64) as Digit }
 }
 
+//
+// The following functions ignore overflows in arithmetic operations.
+// The debug builds choose 'overflowing_xxx' flavors of the required operation.
+// They appear ugly for a reason.
 pub fn _mul_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_mul(y).0
@@ -76,11 +80,12 @@ pub fn _shr_(x: Digit, n: u32) -> Digit {
         x >> n
     }
 }
+//
 
-// returns (quotient, remainder)
+// Divide a 128 bit number by a 64 bit number,
 pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
+    // #[cfg(any(debug_assertions, release_test))]
     assert!(divisor > 0, "div64 - divide by zero error");
-    assert!(divisor > hi, "div64 - quotient overflow error");
 
     // when high part is zero, use simple 64-bit division
     if hi == 0 {
