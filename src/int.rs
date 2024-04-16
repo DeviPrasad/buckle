@@ -1,6 +1,7 @@
 use std::cmp::{max, min, PartialEq};
 use std::env;
 use std::fmt::Formatter;
+use std::ops::Shr;
 
 use crate::{bits, Digit, Int, IntStrCase, IntStrPadding, U128};
 
@@ -102,11 +103,7 @@ impl Int {
         n
     }
 
-    fn set_invariants(&mut self, sign: i32) -> &Self {
-        self.fix_invariants(sign)
-    }
-
-    fn fix_invariants(&mut self, sign: i32) -> &Self {
+    fn set_invariants(&mut self, sign: i32) {
         let (pos_lnzd, pos_lnzb) = Self::pos_lnzd_lnzb(self.cb, &self.mag);
         self.pos_lnzd = pos_lnzd;
         self.pos_lnzb = pos_lnzb;
@@ -117,7 +114,6 @@ impl Int {
             self.sign = Self::sign_of(sign);
         }
         self.valid();
-        self
     }
 
     // Find the index of the leading non-zero digit in the magnitude.
@@ -155,14 +151,14 @@ impl Int {
         for (d, s) in res.mag.iter_mut().zip(mag.iter()) {
             *d = *s;
         }
-        res.fix_invariants(sign);
+        res.set_invariants(sign);
         res
     }
 
     pub fn new_digit(bit_len: u32, val: Digit) -> Self {
         let mut res = Self::new(bit_len);
         res.mag[0] = val;
-        res.fix_invariants(1);
+        res.set_invariants(1);
         res.valid();
         res
     }
@@ -249,16 +245,30 @@ impl Int {
         }
     }
 
-    pub fn count_ones(&self) -> u32 {
+    // returns (count_of_one_bits, most_significant_set_bit)
+    pub fn count_ones(&self) -> (u32, i32) {
         let mut c = 0;
-        for d in self.mag.iter() {
+        let mut mssb = -1;
+        let mut bit = 0;
+        for &d in self.mag.iter() {
             c += d.count_ones();
+            let mut n = d;
+            for _ in 0..64 {
+                if (n & 1) == 1 {
+                    mssb = bit;
+                }
+                n = n >> 1;
+                bit += 1;
+            }
+            assert_eq!(bit%64, 0);
         }
-        c
+        log::info!("count_ones: {self}, {c}, {mssb}");
+        assert!((c == 0 && mssb == -1) || (c > 0 && mssb >= 0));
+        (c, mssb)
     }
 
     pub fn pow2(&self) -> bool {
-        self.count_ones() == 1 && self.mag[0] != 1
+        self.count_ones().0 == 1 && self.mag[0] != 1
     }
 
     fn inverse(&self, _n: &Int) -> Int {
@@ -483,7 +493,7 @@ impl Int {
             acc[i + n2.digits_len() as usize] = carry;
         }
         let mut prod = Int::new_from_parts(n1.bits_len() + n2.bits_len(), acc, 1);
-        prod.fix_invariants(1);
+        prod.set_invariants(1);
         prod.valid();
         prod
     }
@@ -530,7 +540,6 @@ impl Int {
         let base_pow_2k = Int::new_digit(64 * 2 * k + 1, 0).set_bit_mut(64 * 2 * k);
         let c1_mul_base_pow_2k = c1.mul(&base_pow_2k);
         let c0_plus_c1 = c0.resize_sum(&c1);
-        //let (t1, _) = Int::sub(&c0.resize_sum(c0_plus_c1), &c2);
         let mut prod = if sign_a * sign_b >= 0 {
             let (c0_plus_c1_minus_c2, _) = c0_plus_c1.sub_abs(&c2);
             c0.resize_sum(&c0_plus_c1_minus_c2.mul(&base_pow_k)).resize_sum(&c1_mul_base_pow_2k)
@@ -545,7 +554,7 @@ impl Int {
     fn truncate(&mut self, digits_len: u32, sign: i32) {
         self.cb = digits_len * Digit::BITS;
         self.mag.resize(digits_len as usize, 0);
-        self.fix_invariants(sign);
+        self.set_invariants(sign);
         self.valid();
     }
 
@@ -616,34 +625,43 @@ impl Int {
 
         assert!(!divisor.is_zero(), "Int::divide - division by zero error");
 
-        let (_, _, d) = dividend.compare(divisor);
-        if d == 0 { // dividend == divisor
-            log::info!("\t{dividend} == {divisor}");
-            return (Int::one(Digit::BITS), Int::zero(Digit::BITS))
-        }
-
-        if d < 0 { // dividend < divisor
-            log::info!("\t{dividend} < {divisor}");
-            return (Int::zero(Digit::BITS), dividend.compact())
-        }
-
-        if let (true, digit) = divisor.digit_value() {
-            return dividend.divide_by_digit(digit)
-        }
-
-        let nl = dividend.digits_len(); // count of digits in the dividend
-        let dl = divisor.digits_len(); // count of digits in the divisor
-        let (q, r): (Int, Int) =
-            if nl < Int::BURNIKEL_ZIEGLER_DIV_THRESHOLD ||
-                (nl - dl) < Int::BURNIKEL_ZIEGLER_DIV_OFFSET {
-                Self::divide_knuth(&dividend, &divisor)
+        if self.is_zero() { // dividend == 0
+            (Int::zero(Digit::BITS), Int::zero(Digit::BITS))
+        } else if let (1, l) = divisor.count_ones() { // is divisor a power of 2?
+            // yes! divisor is a power of 2, and therefore, simply shr the dividend by 'l'
+            // NOTE: this naturally accommodates division by 1, in which case l == 0.
+            assert!(l >= 0 && (l as u32) < divisor.bits_len());
+            let mut q = dividend.shr(l as u32);
+            q.set_invariants(self.sign);
+            q.compact_mut();
+            q.valid();
+            // TODO - FIND OUT AN EFFICIENT WAY TO OBTAIN THE REMAINDER
+            (q, Int::zero(64))
+        } else {
+            let (_, _, co) = dividend.compare(divisor);
+            if co == 0 { // dividend == divisor
+                (Int::one(Digit::BITS), Int::zero(Digit::BITS))
+            } else if co < 0 { // dividend < divisor
+                (Int::zero(Digit::BITS), dividend.compact())
+            } else if let (true, digit) = divisor.digit_value() {
+                dividend.divide_by_digit(digit)
             } else {
-                panic!("Burnikel-Ziegler division not implemented!")
-            };
-
-        q.valid();
-        r.valid();
-        (q, r)
+                let nl = dividend.digits_len(); // count of digits in the dividend
+                let dl = divisor.digits_len(); // count of digits in the divisor
+                let (mut q, r) =
+                    if nl < Int::BURNIKEL_ZIEGLER_DIV_THRESHOLD ||
+                        (nl - dl) < Int::BURNIKEL_ZIEGLER_DIV_OFFSET {
+                        Self::divide_knuth(&dividend, &divisor)
+                    } else {
+                        panic!("Burnikel-Ziegler division not implemented!")
+                    };
+                q.set_invariants(self.sign);
+                q.compact_mut();
+                q.valid();
+                r.valid();
+                (q, r)
+            }
+        }
     }
 
     pub fn divide_knuth(&self, divisor: &Int) -> (Int, Int) {
@@ -656,56 +674,54 @@ impl Int {
         dividend.valid();
         divisor.valid();
         let nl = dividend.digits_len();  // count of digits in the dividend
-        let dl = divisor.digits_len();   // count of digits in the divisor
+        let dl = divisor.digits_len();
+        // count of digits in the divisor
         log::info!("div_knuth - leave");
-        (Int::zero((nl-dl+1) * Digit::BITS), Int::zero((nl-dl)*Digit::BITS))
+        (Int::zero((nl - dl + 1) * Digit::BITS), Int::zero((nl - dl) * Digit::BITS))
     }
 
     pub fn divide_by_digit(&self, d: Digit) -> (Int, Int) {
         log::info!("divide by digit {d}");
         assert!(d > 0);
         self.valid();
-        let num = self;
 
+        let num = self;
         let mut r: Digit = 0;
-        let mut quotient = Int::new(num.bits_len());
-        // notice l = n-1 where n is the length of the dividend, and hence, of the result.
-        let l = quotient.digits_len() as usize - 1;
+        let mut q = Int::new(num.bits_len());
+        // note l = n-1 where n is the length of the dividend, and hence, of the result.
+        let l = q.digits_len() as usize - 1;
         // in the following, i ranges over n-1, n-2,...,0.
         // therefore, l-i ranges over (n-1)-(n-1), (n-1)-(n-2),...,(n-1-0) = 0,1,...n-1
         for (i, &nd) in num.mag.iter().rev().enumerate() {
-            (quotient.mag[l-i], r) = bits::div64(r, nd, d);
+            (q.mag[l - i], r) = bits::div64(r, nd, d);
         }
-        quotient.set_invariants(self.sign);
-        quotient.compact_mut();
-        quotient.valid();
-        (quotient, Int::new_digit(Digit::BITS, r))
+        q.set_invariants(self.sign);
+        q.compact_mut();
+        q.valid();
+        (q, Int::new_digit(Digit::BITS, r))
     }
 
     fn clear_bit(&self, pos: u32) -> Int {
         self.valid();
-        debug_assert!(pos < self.bits_len(), "clear_bit {pos:} >= {}", self.bits_len());
-        #[cfg(release_test)]
+        #[cfg(any(debug_assertions, release_test))]
         assert!(pos < self.bits_len(), "rut: clear_bit {pos} >= {:?}", self.bits_len());
         self.clone().clear_bit_mut(pos)
     }
 
     fn clear_bit_mut(mut self, pos: u32) -> Int {
         self.valid();
-        debug_assert!(pos < self.bits_len(), "clear_bit_mut {pos} >={:?}", self.bits_len());
+        #[cfg(any(debug_assertions, release_test))]
+        assert!(pos < self.bits_len(), "clear_bit_mut {pos} >={:?}", self.bits_len());
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
-        #[cfg(release_test)]
-        assert!(pos < self.bits_len(), "rut: clear_bit_mut {pos} >= {:?}", self.bits_len());
         self.mag[l as usize] |= self.mag[l as usize] & !(1 << p);
-        self.fix_invariants(self.sign);
+        self.set_invariants(self.sign);
         self.valid();
         self
     }
 
     pub fn test_bit(&self, pos: u32) -> bool {
         self.valid();
-        debug_assert!(pos < self.bits_len(), "test_bit {pos} >= {:?}", self.bits_len());
-        #[cfg(release_test)]
+        #[cfg(any(debug_assertions, release_test))]
         assert!(pos < self.bits_len(), "rut: test_bit {pos} >= {:?}", self.bits_len());
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] & (1 << p) != 0
@@ -723,46 +739,66 @@ impl Int {
         #[cfg(any(debug_assertions, release_test))]
         assert!(count <= self.bits_len(), "shl {count} > {}", self.bits_len());
         let mut r = self.clone();
-        let cd = r.digits_len() as usize;
-        let mut count = count;
-        // iteratively left-shift bits; each iteration can deal with only Digit::BITS at a time.
-        while count > 0 {
-            // number of bits to be lef-shifted, in this iteration, from each digit.
-            let c = min(count, Digit::BITS);
-            for i in (1..cd).rev() {
-                // we need to be careful about the corner case where c == 64.
-                r.mag[i] = (r.mag[i] << (c - 1) << 1) | (r.mag[i - 1] >> Digit::BITS - c);
-            }
-            r.mag[0] = r.mag[0] << (c - 1) << 1;
-            count -= c;
-        }
-        r.fix_invariants(r.sign);
-        r.valid();
+        r.shl_mut(count);
         r
     }
 
+    fn shl_mut(&mut self, count: u32) {
+        let mut t = self;
+        let cd = t.digits_len() as usize;
+        let mut count = count;
+        // iteratively left-shift one digit (or iow, Digit::BITS) at a time.
+        while count > 0 {
+            // number of bits to be left-shifted, in this iteration, from each digit.
+            let c = min(count, Digit::BITS);
+            for i in (1..cd).rev() {
+                // we need to be careful about the case where c == 64.
+                t.mag[i] = (t.mag[i] << (c - 1) << 1) | (t.mag[i - 1] >> Digit::BITS - c);
+            }
+            t.mag[0] = t.mag[0] << (c - 1) << 1;
+            count -= c;
+        }
+        t.set_invariants(t.sign);
+        t.valid();
+    }
+
     fn shl_expand(&self, count: u32) -> Int {
-        log::info!("shl_expand - enter\n\tself  = {self}\n\tcount = {count}");
         self.valid();
 
         let mut r = Int::new_from_parts(self.bits_len() + count, self.mag.clone(), self.sign);
+        r.shl_mut(count);
+        r
+    }
+
+    // 0 <= count <= self.bit_len()
+    fn shr(&self, count: u32) -> Int {
+        self.valid();
+        #[cfg(any(debug_assertions, release_test))]
+        assert!(count <= self.bits_len(), "shr {count} > {}", self.bits_len());
+        let mut t = self.clone();
+        t.shr_mut(count);
+        t
+    }
+
+    // nothing much happens when count = 0.
+    fn shr_mut(&mut self, count: u32) {
+        self.valid();
+        let mut t = self;
+        let cd = t.digits_len() as usize;
         let mut count = count;
-        // iteratively left-shift bits; each iteration can deal with only Digit::BITS at a time.
+        // iteratively right-shift one digit (or iow, Digit::BITS) at a time.
         while count > 0 {
-            // number of bits to be lef-shifted, in this iteration, from each digit.
+            // number of bits to be right-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for i in (1_usize..r.digits_len() as usize).rev() {
-                // we need to be careful about the corner case where c == 64.
-                let d = (r.mag[i] << (c - 1) << 1) | (r.mag[i - 1] >> Digit::BITS - c);
-                r.mag[i] = d;
+            for i in 0..=cd-2 {
+                // we need to be careful about the case where c == 64.
+                t.mag[i] = (t.mag[i] >> (c - 1) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
             }
-            r.mag[0] = r.mag[0] << (c - 1) << 1;
+            t.mag[cd-1] = t.mag[cd-1] >> (c - 1) >> 1;
             count -= c;
         }
-        r.fix_invariants(r.sign);
-        r.valid();
-        log::info!("\tresult = {r}\nshl_expand - leave");
-        r
+        t.set_invariants(t.sign);
+        t.valid();
     }
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {
@@ -771,7 +807,7 @@ impl Int {
         assert!(pos < self.bits_len(), "set_bit_mut {pos} >= {:?}", self.bits_len());
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= 1 << p;
-        self.fix_invariants(self.sign);
+        self.set_invariants(self.sign);
         self.valid();
         self
     }
@@ -783,7 +819,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x & y;
         });
-        res.fix_invariants(1);
+        res.set_invariants(1);
         res.valid();
         res
     }
@@ -794,7 +830,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] &= y;
         }
-        self.fix_invariants(1);
+        self.set_invariants(1);
         self.valid();
         self
     }
@@ -806,7 +842,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x | y;
         });
-        res.fix_invariants(1);
+        res.set_invariants(1);
         res.valid();
         res
     }
@@ -817,7 +853,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] |= n2.mag[i];
         }
-        self.fix_invariants(1);
+        self.set_invariants(1);
         self.valid();
         self
     }
@@ -831,7 +867,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x ^ y;
         });
-        res.fix_invariants(1);
+        res.set_invariants(1);
         res.valid();
         res
     }
@@ -842,7 +878,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] ^= n2.mag[i];
         }
-        self.fix_invariants(1);
+        self.set_invariants(1);
         self.valid();
         self
     }
@@ -897,23 +933,24 @@ mod test {
     fn int_compact() {
         init();
         {
-            let mut zero = Int::zero(16*1024);
-            assert_eq!(zero.digits_len(), 16*1024/Digit::BITS);
-            assert_eq!(zero.bits_len(), 16*1024);
+            let mut zero = Int::zero(16 * 1024);
+            assert_eq!(zero.digits_len(), 16 * 1024 / Digit::BITS);
+            assert_eq!(zero.bits_len(), 16 * 1024);
             zero.compact_mut();
             assert_eq!(zero, Int::new(64));
             assert_eq!(zero.digits_len(), 1);
             assert_eq!(zero.bits_len(), Digit::BITS);
         }
         {
-            let n = Int::new_digit(8*1024, 3);
-            assert_eq!(n.digits_len(), 8*1024/Digit::BITS);
+            let n = Int::new_digit(8 * 1024, 3);
+            assert_eq!(n.digits_len(), 8 * 1024 / Digit::BITS);
             let m = n.compact();
             assert_eq!(m.digits_len(), 1);
             assert_eq!(m.mag[0], 3);
-            assert_eq!(n.digits_len(), 8*1024/Digit::BITS);
+            assert_eq!(n.digits_len(), 8 * 1024 / Digit::BITS);
         }
     }
+
     #[test]
     fn int_div_by_digit() {
         init();
@@ -949,6 +986,7 @@ mod test {
             assert_eq!(r.mag, [0]);
         }
 
+        // division by powers of 2 converts division into a shr operation
         {
             let n = Int::new_digit(128, 52871);
             let d = Int::new_digit(128, 1);
@@ -956,19 +994,28 @@ mod test {
             assert_eq!(q.mag, [52871]);
             assert_eq!(r.mag, [0]);
         }
+
+        {
+            let n = Int::new_digit(128, 99885287135);
+            let d = Int::new_digit(128, 1024);
+            let (q, r) = n.divide(&d);
+            assert_eq!(q.mag, [99885287135 >> 10]);
+            assert_eq!(q.mag, [99885287135/1024]);
+            assert_eq!(r.mag, [0]);
+        }
         {
             let n = Int::new_digit(128, 52871);
             let d = Int::new_digit(128, 3);
             let (q, r) = n.divide(&d);
-            assert_eq!(q.mag, [52871/3]);
-            assert_eq!(r.mag, [52871%3]);
+            assert_eq!(q.mag, [52871 / 3]);
+            assert_eq!(r.mag, [52871 % 3]);
         }
         {
-            let n = Int::new_digit(16*1024, 99999999999999999);
+            let n = Int::new_digit(16 * 1024, 99999999999999999);
             let d = Int::new_digit(64, 7);
             let (q, r) = n.divide(&d);
-            assert_eq!(q.mag, [99999999999999999/7]);
-            assert_eq!(r.mag, [99999999999999999%7]);
+            assert_eq!(q.mag, [99999999999999999 / 7]);
+            assert_eq!(r.mag, [99999999999999999 % 7]);
         }
     }
 
@@ -1321,6 +1368,58 @@ mod test {
             assert_eq!(n2.mag, [0, 0, 0, 0]);
             let n2 = x128.shl(128);
             assert_eq!(n2.mag, [0, 0, 1, 0]);
+        }
+    }
+
+    #[test]
+    fn int_shr() {
+        {
+            let x128 = Int::from_le_digits_vec(vec![0xFFFF000000050003, 0], 1);
+            let n2 = x128.shr(8);
+            assert_eq!(n2.mag, [0x00FFFF0000000500, 0]);
+            let n2 = x128.shr(32);
+            assert_eq!(n2.mag, [0x00000000FFFF0000, 0]);
+            let n2 = n2.shr(64);
+            assert_eq!(n2.mag, [0, 0]);
+        }
+        {
+            let x128 = Int::from_le_digits_vec(vec![0xFFFF000000050003, 0x2222222222222222], 1);
+            assert_eq!(x128.shr(0), x128);
+            assert_eq!(x128.shr(1).mag, [0xFFFF000000050003/2, 0x2222222222222222/2]);
+            assert_eq!(x128.shr(3).mag, [0x22 << 61 | 0xFFFF000000050003>>3, 0x2222222222222222>>3]);
+            let mut n2 = x128.shr(8);
+            assert_eq!(n2.mag, [0x22FFFF0000000500, 0x0022222222222222]);
+            let mut n2 = n2.shr(56);
+            assert_eq!(n2.mag, [0x2222222222222222, 0]);
+        }
+    }
+    #[test]
+    fn count_ones() {
+        init();
+        {
+            let x = Int::new_digit(256, 0);
+            let (c, lx) = x.count_ones();
+            assert!(c == 0 && lx == -1);
+        }
+        {
+            let x = Int::new_digit(256, 1);
+            let (c, lx) = x.count_ones();
+            assert!(c == 1 && lx == 0);
+        }
+        {
+            let x = Int::new_digit(256, 1<<63);
+            let (c, lx) = x.count_ones();
+            assert!(c == 1 && lx == 63);
+        }
+        {
+            let x = Int::from_le_digits_vec(vec![0, 2], 1);
+            let (c, lx) = x.count_ones();
+            assert!(c == 1 && lx == 65);
+        }
+        {
+            let x = Int::from_le_digits_vec(vec![0, 0xFF00000000000000], 1);
+            let (c, lx) = x.count_ones();
+            assert!(c == 8 && lx == 127);
         }
     }
 }
