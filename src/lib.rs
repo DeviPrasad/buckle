@@ -1,4 +1,5 @@
 #[allow(unused_variables)]
+#[allow(unused_labels)]
 #[allow(dead_code)]
 
 use std::io::Write;
@@ -67,3 +68,4 @@ pub struct U128 {
 
 mod int;
 mod bits;
+mod hex;

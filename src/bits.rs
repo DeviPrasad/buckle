@@ -41,6 +41,14 @@ pub fn _mul_(x: Digit, y: Digit) -> Digit {
     }
 }
 
+pub fn _mul128_(x: u128, y: u128) -> u128 {
+    if cfg!(debug_assertions) {
+        x.overflowing_mul(y).0
+    } else {
+        x * y
+    }
+}
+
 pub fn _div_(x: Digit, y: Digit) -> Digit {
     if cfg!(debug_assertions) {
         x.overflowing_div(y).0
@@ -84,8 +92,8 @@ pub fn _shr_(x: Digit, n: u32) -> Digit {
 
 // Divide a 128 bit number by a 64 bit number,
 pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
-    // #[cfg(any(debug_assertions, release_test))]
     assert!(divisor > 0, "div64 - divide by zero error");
+    // assert!(divisor > hi, "div64 - quotient overflow error");
 
     // when high part is zero, use simple 64-bit division
     if hi == 0 {
@@ -109,7 +117,7 @@ pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
     let s_i64_right_shifted_63: i64 = -(s as i64) >> 63;
     let lo_normalized: u64 = ((lo as i64 >> s_i64) & s_i64_right_shifted_63) as u64;
     let _lo_normalized_ideal_ = if s == 0 {
-        (lo >> 32) >> 32
+        (lo >> 63) >> 1
     } else {
         lo >> (64 - s)
     };
@@ -151,7 +159,7 @@ pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
             (_sub_(_add_(_shl_(un21, 32), ln32_0), _mul_(q_hat_0, dn64))) >> s)
 }
 
-fn leading_zeroes_count(x: Digit) -> u32 {
+pub fn leading_zeroes_count(x: Digit) -> u32 {
     Digit::BITS - len_binary_digit(x)
 }
 
