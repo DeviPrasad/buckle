@@ -131,6 +131,20 @@ fn _mul32_(x: u32, y: u32) -> u32 {
     }
 }
 
+fn _mul_32_16_(x: u32, y: u16) -> u32 {
+    let (p, o) = x.overflowing_mul(y as u32);
+    assert!(!o);
+    p
+}
+
+pub fn _sub16_(x: u16, y: u16) -> (u16, bool) {
+    x.overflowing_sub(y)
+}
+
+pub fn _sub32_(x: u32, y: u32) -> (u32, bool) {
+    x.overflowing_sub(y)
+}
+
 fn magnitude(digits: &Vec<u16>) -> u128 {
     let mut v = 0_u128;
     let mut k = 0_u128;
@@ -169,32 +183,47 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
             log::info!("\t\tj = {j}, {un_s2d}/{vn_ld}, r = {}, q = {}", r, q);
             while q >= BASE ||
                 _mul32_(q, vn[n - 2] as u32) > (_mul32_(BASE, r) + un[j + n - 2] as u32) {
-                log::info!("\t\t q_correction: q = {q}, v[n-1] = {vn_ld}, vn[n-2] = {}, r = {r}, un[j+n-2] = {}", (vn[n - 2] as u32), (un[j + n - 2] as u32));
+                log::info!("\t\tq_correction: q = {q}, v[n-1] = {vn_ld}, vn[n-2] = {}, r = {r}, un[j+n-2] = {}", (vn[n - 2] as u32), (un[j + n - 2] as u32));
                 q -= 1;
                 r += vn_ld;
-                // log::info!("\t\t q and r ");
+                if r >= BASE {
+                    break;
+                }
             }
         }
         let mut t: i32 = 0;
         //
         #[allow(unused_labels)]
-        'D4: { // multiply and subtract
-            let mut k: i32 = 0;
+        'D4: {
+            // multiply and subtract
             log::info!("\tD4. multiply and subtract");
+            let mut k: u32 = 0;
+            let mut o1 = false;
+            let mut o2 = false;
+            let mut o3 = false;
             for i in 0..n {
                 // assert_eq!(k & 0xFFFF0000u32 as i32, 0);
                 let p: u32 = _mul32_(q, vn[i] as u32);
-                let (t1, o1) = (un[i + j] as u16).overflowing_sub((p & BASE_MASK) as u16);
-                let (t2, o2) = t1.overflowing_sub(k as u16);
+                log::info!("\t\tmul_sub: q = {q}, v[{i}] = {:x}, p = {p:x}", vn[i]);
+                log::info!("\t\tmul_sub: un[{}] = {:x}, p & 0xFFFF = {}, t1 = {:?}", i+j, un[i+j], p & 0xFFFF, _sub32_(un[i + j] as u32, (p & 0xFFFF)));
+                let (t1, o1) = _sub32_(un[i + j] as u32, (p & 0xFFFF));
+                log::info!("\t\tmul_sub: t1 = {t1:x}, o1 = {o1}");
+                let (t2, o2) = _sub32_(t1, k);
+                log::info!("\t\tmul_sub: t2 = {t2:x}, o2 = {o2}");
                 un[i + j] = t2 as u16;
-                assert!(o1 as u32 + o2 as u32 <= 2);
-                let mut _o3_ = true;
-                let (k3, _o3_) = ((p >> D16::BITS) as i32).overflowing_sub((t >> D16::BITS) as i32 + o1 as i32 + o2 as i32);
-                assert_eq!(_o3_, false);
-                k = k3 as i32
+
+                assert!(o1 as u16 + o2 as u16 <= 2);
+                o3 = true;
+                let (k3, _o3_) = _sub32_((p >> D16::BITS), (t2 >> 16));
+                k = k3;
             }
-            t = (un[j + n] as i32 - k as i32) as i32;
-            un[j + n] = t as D16;
+            let temp = (un[j + n] as u32);
+            un[j + n] = temp
+                .overflowing_sub(k).0 // as u16;
+                .overflowing_sub(o1 as u32 + o2 as u32).0 as u16;
+            t = (temp as u32)
+                .overflowing_sub(k as u32).0 // ;
+                .overflowing_sub(o1 as u32 + o2 as u32).0 as i32;
         }
         #[allow(unused_labels)]
         'D5: {
@@ -204,7 +233,7 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
         'D6: { // add back
             if t < 0 {
                 log::warn!("\tD6. add-back");
-                quotient[j] = quotient[j] - 1; //
+                quotient[j] = quotient[j] - 1;
                 let mut k: u32 = 0;
                 for i in 0..n {
                     let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
@@ -226,6 +255,31 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
 mod d16_k_tests {
     use crate::init_logger;
     use crate::kdiv::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
+
+    #[test]
+    fn u16_arith() {
+        assert_eq!(2_u16.overflowing_sub(3_u16), (0xFFFF, true));
+        let (t1, o1) = 2_u16.overflowing_sub(3_u16); //  0xFF
+        let (t2, o2) = t1.overflowing_sub(1_u16);
+        assert_eq!(t2, 0xFFFE);
+        assert_eq!(o1, true);
+        assert_eq!(o2, false);
+        let (t2, o3) = t1.overflowing_sub(0xFFFF);
+        assert_eq!((t2, o3), (0, false));
+        let (t2, o3) = t2.overflowing_sub(0xFFFF);
+        assert_eq!(o3, true);
+
+        let (t1, o1) = 2_u16.overflowing_sub(4_u16); //  0xFFFE
+        let (t2, o2) = t1.overflowing_sub(0xFFFF); // 0xFFFE - 0xFFFF
+        assert_eq!(t1, 0xFFFE);
+        assert_eq!(t2, 0xFFFF);
+        assert_eq!(o1, true);
+        assert_eq!(o2, true);
+
+        let (t3, o3) = t1.overflowing_sub(0xFFFD); // 0xFFFE - 0xFFFD
+        assert_eq!(t3, 1);
+        assert_eq!(o3, false);
+    }
 
     #[test]
     fn vec16_normalize() {
@@ -251,27 +305,32 @@ mod d16_k_tests {
         let cases: Vec<Case> = vec![
             Case(vec![0xffff, 0xffff], vec![0x0000, 0x0001], vec![0xffff]),
             Case(vec![0x7899, 0xbcde], vec![0x789a, 0xbcde], vec![0]),
-            Case(vec![0x89ab, 0x4567, 0x0123], vec![0x0000, 0x0001], vec![0x4567, 0x0123]), // 1250999896491 / 65536
 
+            // 0x89ab + 2**16*0x4567 + 2**32 * 0x0123 == 1250999896491
+            // 2**16*0x0001 == 65536
+            // 1250999896491 / 65536
+            Case(vec![0x89ab, 0x4567, 0x0123], vec![0x0000, 0x0001], vec![0x4567, 0x0123]),
+
+            // Shows that first q_hat can = b + 1.
             // (0xfffe * 2**16 + 0x8000 * 2**32) == 140741783191552
             // (0xffff +  2**16 * 0x8000) == 2147549183
             // (140741783191552, 2147549183, 65535)
-            // Case(vec![0, 0xfffe, 0x8000], vec!(0xffff, 0x8000), vec!(0xffff, 0x0000))
+            Case(vec![0, 0xfffe, 0x8000], vec!(0xffff, 0x8000), vec!(0xffff, 0x0000)),
 
             // add-back required
             // 0x0003 + 2**16 * 0x0000 + 2**32 * 0x8000 == 140737488355331
             // 140737488355331 // 35184372088833 == 3
-            //Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
+            // Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
 
             // add-back required
             // 9223231299366420480 // 140737488355329 == 65534
-            // Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe]),
+            // Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe, 0]),
 
             // Shows that multiply-and-subtract quantity cannot be treated as signed.
-            // 0xfffe + 2**32 * 0x8000 + 2**48 * 0xffff
+            // 2**16 * 0xfffe + 2**48 * 0x8000 == 9223372041149612032
+            // 0xffff + 2**32 * 0x8000 == 140737488420863
             // 9223372041149612032 // 140737488420863
             //Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff]),
-
         ];
 
         for case in cases {
