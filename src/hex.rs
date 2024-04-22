@@ -19,12 +19,12 @@ pub fn val(c: u8) -> Result<u8, char> {
 pub fn to_u64(s: &[u8]) -> u64 {
     assert!(s.len() > 0 && s.len() <= 16);
     let mut n: u64 = 0;
-    let mut k: u64 = 1;
+    let mut k: u64 = 0;
     for &hd in s.iter().rev() {
         match val(hd) {
             Ok(v) => {
-                n += v as u64 * k;
-                k = bits::_mul_(k, 16);
+                n += v as u64 * (1 << k*4);
+                k += 1;
             }
             Err(c) => panic!("bad hex char '{c}'")
         }
@@ -56,7 +56,7 @@ pub fn vec_u64(s: &str) -> Vec<u64> {
             .map(|hc| to_u64(hc))
             .collect();
 
-        #[cfg(noob)]
+        // #[cfg(noob)]
         if cfg!(noob)
         {
             // c-like iteration for storing numbers
@@ -70,7 +70,7 @@ pub fn vec_u64(s: &str) -> Vec<u64> {
                     0 => 0,
                     _ => 1
                 };
-            log::info!("learner_tip - vec_u64: {s}");
+            log::info!("noob - vec_u64: {s}");
             assert_eq!(be_vec.len(), len);
             assert_eq!(vu64, be_vec);
         }
@@ -83,6 +83,7 @@ pub fn le_vec_u64(s: &str) -> Vec<u64> {
     v
 }
 
+// RUSTLOG="info" RUSTFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused"  RUSTDOCFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused" cargo test hex_tests::test_short_chunk  -- --show-output
 #[cfg(test)]
 mod hex_tests {
     use crate::hex::{le_vec_u64, vec_u64};
@@ -124,6 +125,13 @@ mod hex_tests {
         {
             let v = vec_u64("0x2f684bda12f684bdc71c71c71c71c71c8e38e38e38e38e38f684bda12f684bda");
             assert_eq!(v, [0x2f684bda12f684bd, 0xc71c71c71c71c71c, 0x8e38e38e38e38e38, 0xf684bda12f684bda]);
+        }
+        {
+            let v = le_vec_u64("0x100000000000000010000000000000002");
+            assert_eq!(v, [2, 1, 1]);
+
+            let v = le_vec_u64("0x40000000000000001");
+            assert_eq!(v, [1, 4]);
         }
     }
 }

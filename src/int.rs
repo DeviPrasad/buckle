@@ -674,10 +674,6 @@ impl Int {
         }
     }
 
-    pub fn divide_knuth(&self, divisor: &Int) -> (Int, Int) {
-        Int::div_knuth(self, divisor)
-    }
-
     // pushes all leading zeroes out.
     // post-condition: The MSB of the result must be 1.
     fn normalize(num: &Int, count: u32, expand: bool) -> Int {
@@ -702,50 +698,108 @@ impl Int {
         self.mag[i as usize]
     }
 
+    pub fn divide_knuth(&self, divisor: &Int) -> (Int, Int) {
+        Int::div_knuth(self, divisor)
+    }
+
     pub fn div_knuth(dividend: &Int, divisor: &Int) -> (/* quotient */Int, /* remainder */Int) {
         log::info!("div_knuth - enter");
         dividend.valid();
         divisor.valid();
-        let u = dividend.compact();
-        let v = divisor.compact();
+        let _u = dividend.compact();
+        let _v = divisor.compact();
+        let m = _u.digits_len();
+        let n = _v.digits_len();
+        assert!(m >= 2 && n >= 2 && m >= n);
         // count of leading zeroes in the divisor
-        let count_digits = v.digits_len();
+        let count_digits = n;
         let cbs = count_digits * Digit::BITS - 1 -
-            ((v.pos_lnzd as u32 * Digit::BITS) + v.pos_lnzb as u32);
+            ((_v.pos_lnzd as u32 * Digit::BITS) + _v.pos_lnzb as u32);
         log::info!("normalize shift count: {cbs}");
-        let vn = Self::normalize(&v, cbs, false);
+        let vn = Self::normalize(&_v, cbs, false);
         // normalize the divider by stripping away leading zeroes.
         assert_eq!(vn.mag[vn.pos_lnzd as usize] & (1 << 63), 1 << 63);
-        let mut un = Self::normalize(&u, cbs, true);
-        let m = un.digits_len();
-        let n = vn.digits_len();
-        assert!(m > 2 && n >= 2 && m >= n + 1);
-        log::info!("normalized m = {m}, n = {n}");
-        const BASE: u128 = 1 << 64;
-        let mut r: u128 = 0;
-        let mut q: u128 = 0;
-        let mut sign: i64 = 0;
+        // begin normalize u
+        // let mut un =Self::normalize(&_u, cbs, true);
+        let mut un = Int::new(_u.bits_len() + 64);
+        un.mag[m as usize] = _u.mag[(m - 1) as usize] >> (64 - cbs);
+        for i in (1..m).rev() {
+            // we need to be careful about the case where c == 64.
+            let k = i as usize;
+            un.mag[k] = (_u.mag[k] << cbs) | (_u.mag[k - 1] >> (Digit::BITS - cbs));
+            // un.mag[k] = ((un.mag[k] << (cbs - 1)) << 1) | (un.mag[k - 1] >> (Digit::BITS - cbs));
+        }
+        un.mag[0] = _u.mag[0] << cbs;
+        // end normalize u
+        un.set_invariants(1);
+        un.valid();
+        log::info!("normalized u and v. m = {m}[um_len = ({})], n = {n}[vn_len = ({})]", un.digits_len(), vn.digits_len());
+        log::info!("normalized u. um = {un}");
+        log::info!("     given u.  m = {_u}");
+        log::info!("normalized v. vn = {vn}");
+        log::info!("     given v.  v = {_v}");
 
-        for j in (0..m - n).rev() {
+        const BASE: u128 = 1 << 64;
+        const BASE_MASK: u128 = BASE - 1;
+        let mut q: u128 = 0;
+        let mut quotient = vec![0; (m - n + 1) as usize];
+        for j in (0..=m - n).rev() {
             log::info!("\touter loop: m = {m}, n = {n}, m-n = {}", m-n);
             #[allow(unused_labels)]
-            'd3: {
-                let un_s2d: u128 = (un.digit(j+n) as u128) << 64 | un.digit(j + n - 1) as u128;
+            'D3: { // calculate q
+                let mut r: u128 = 0;
+                let un_s2d: u128 = (un.digit(j + n) as u128 * BASE) + un.digit(j + n - 1) as u128;
                 let vn_ld: u128 = vn.digit(n - 1) as u128;
                 q = un_s2d.div(vn_ld);
-                r = un_s2d.rem(vn_ld);
+                r = un_s2d % (vn_ld);
+                log::info!("\t j = {j}, dividend = {un_s2d}, divisor = {vn_ld}, q = {}, r = {}", q, r);
                 while q >= BASE ||
-                    bits::_mul128_(q, vn.digit(n - 2) as u128) > (BASE * r + un.digit(j + n - 2) as u128) {
+                    bits::_mul128_(q, vn.digit(n - 2) as u128) >=
+                        (bits::_mul128_(BASE, r) + un.digit(j + n - 2) as u128) {
                     q -= 1;
                     r += vn_ld;
                     log::info!("\t\t q and r adjusted");
                 }
-                (un, sign) = Int::resize_sub(&un, &vn.mul(&Int::from_le_digits_vec(vec![q as u64, (q >> 64) as u64], 1)));
-                assert!(sign >= 0);
-                log::info!("\t j = {j}, dividend = {un_s2d}, divisor = {vn_ld}, q = {}, r = {}, sign = {sign}", q, r);
-                // un.compact_mut();
             }
+            let mut t: u128 = 0;
+            //
+            'D4: { // multiply and subtract
+                let mut k: u128 = 0;
+                log::warn!("multiply and subtract activated!");
+                for i in 0..n {
+                    let p: u128 = bits::_mul128_(q, vn.mag[i as usize] as u128);
+                    let (t1, o1) = (un.mag[(i + j) as usize]).overflowing_sub(p as u64);
+                    let (t2, o2) = t1.overflowing_sub(k as u64);
+                    // t = un.mag[(i + j) as usize] as i128 - k - (p && BASE_MASk) as i128;
+                    un.mag[(i + j) as usize] = t2;
+                    let (k1, o3) = (p >> Digit::BITS).overflowing_sub(t >> Digit::BITS) ;
+                    k = k1; // k = (p >> Digit::BITS) - (t >> Digit::BITS);
+                }
+                t = un.mag[(j + n) as usize] as u128 - k;
+                un.mag[(j + n) as usize] = t as u64;
+            }
+            'D5: {
+                quotient[j as usize] = q; // tentative quotient digit
+            }
+            /*
+            'D6: { // add back
+                if t < 0 {
+                    log::warn!("add back activated!");
+                    quotient[j as usize] = quotient[j as usize] - 1;       // much, add back.
+                    let mut k: i128 = 0;
+                    for i in 0..n {
+                        let mut t: i128 = (un.mag[(i + j) as usize] as i128 + vn.mag[i as usize] as i128) + k as i128;
+                        un.mag[(i + j) as usize] = t as u64;
+                        k = t >> Digit::BITS;
+                    }
+                    un.mag[(j + n) as usize] += k as u64;
+                }
+            }*/
+            log::info!("\t j = {j}, quotient = {quotient:?}");
+            un.set_invariants(un.sign);
+            un.valid();
         }
+
         log::info!("div_knuth - leave");
         //(Int::zero((un_len - vn_len + 1) * Digit::BITS), Int::zero((un_len - vn_len) * Digit::BITS))
         (un, vn)
@@ -777,7 +831,7 @@ impl Int {
         let mut r: u128 = 0;
         {
             for (i, &nd) in num.mag.iter().rev().enumerate() {
-                let tq = (r * BASE + nd as u128)/(d as u128);
+                let tq = (r * BASE + nd as u128) / (d as u128);
                 log::info!("divide by digit: nd = {nd}, r = {r}, r * BASE = {}, num = {}, divisor = {d}, q = {tq}", r * BASE, (r * BASE + nd as u128));
                 assert_eq!((tq >> 64) as u64, 0);
                 r = (r * BASE + nd as u128) - (tq * d as u128);
@@ -1045,8 +1099,11 @@ mod test {
     fn div_knuth() {
         init();
         {
-            let n = Int::from_le_digits_vec(vec![2, 1, 1], 1);
-            let d = Int::from_le_digits_vec(vec![1, 4], 1);
+            // n = 0x100000000000000010000000000000002
+            // d = 0x40000000000000001
+            // let n = Int::from_le_digits_vec(vec![1, 10, 20], 1);
+            let n = Int::from_le_digits_vec(vec![1, 10, 4], 1);
+            let d = Int::from_le_digits_vec(vec![1, 5], 1);
             let (q, r) = n.divide_knuth(&d);
             //assert_eq!(q.mag, [1024 << 61, 8 << 61 | 1024 >> 3, 0 << 61 | 8 >> 3]);
             //assert_eq!(r.mag, [10 << 61, 4 << 61 | 10 >> 3]);

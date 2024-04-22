@@ -11,7 +11,7 @@ pub fn sub_with_borrow(x: Digit, y: Digit, borrow: Digit) -> (/* diff */ Digit, 
     let (diff, o1) = x.overflowing_sub(y);
     let (diff, o2) = diff.overflowing_sub(borrow);
     assert!(o1 as u64 <= 1 && o2 as u64 <= 1);
-    (diff, o1 as Digit | o2 as Digit)
+    (diff, o1 as Digit + o2 as Digit)
 }
 
 #[allow(dead_code)]
@@ -20,7 +20,7 @@ pub fn add_with_carry(x: Digit, y: Digit, carry: Digit) -> (/* sum */ Digit, /* 
     let (sum, o1) = x.overflowing_add(y);
     let (sum, o2) = sum.overflowing_add(carry);
     assert!(o1 as Digit <= 1 && o2 as Digit <= 1);
-    (sum, o1 as Digit | o2 as Digit)
+    (sum, o1 as Digit + o2 as Digit)
 }
 
 // This is the simplest version of mul64 using Rust's 128-bit multiplication
