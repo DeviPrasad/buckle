@@ -2,6 +2,11 @@ use std::ops::Div;
 
 use crate::{bits, Digit};
 
+//
+// https://news.ycombinator.com/item?id=26562819
+// https://skanthak.hier-im-netz.de/division.html
+//
+
 type D16 = u16;
 
 // obtains the u64 value of the hex str 's'
@@ -278,54 +283,6 @@ mod d16_k_tests {
     }
 
     #[test]
-    fn kat_unsigned_mul_sub() {
-        init_logger(true);
-        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
-        let cases: Vec<Case> = vec![
-            // Shows that multiply-and-subtract quantity cannot be treated as signed.
-            // 2**16 * 0xfffe + 2**48 * 0x8000 == 9223372041149612032
-            // 0xffff + 2**32 * 0x8000 == 140737488420863
-            // 9223372041149612032 // 140737488420863 == 65535
-            Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff, 0]),
-        ];
-        for case in cases {
-            let q = div(&case.0, &case.1);
-            assert_eq!(q, case.2);
-        }
-    }
-
-    #[test]
-    fn kat_add_back_01() {
-        init_logger(true);
-        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
-        let cases: Vec<Case> = vec![
-            // add-back required
-            // 0x0003 + 2**16 * 0x0000 + 2**32 * 0x8000 == 140737488355331
-            // 140737488355331 // 35184372088833 == 3
-            Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
-        ];
-        for case in cases {
-            let q = div(&case.0, &case.1);
-            assert_eq!(q, case.2);
-        }
-    }
-
-    #[test]
-    fn kat_add_back_02() {
-        init_logger(true);
-        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
-        let cases: Vec<Case> = vec![
-            // add-back required
-            // 9223231299366420480 // 140737488355329 == 65534
-            Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe, 0]),
-        ];
-        for case in cases {
-            let q = div(&case.0, &case.1);
-            assert_eq!(q, case.2);
-        }
-    }
-
-    #[test]
     fn kat_generic() {
         init_logger(true);
         struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
@@ -358,6 +315,24 @@ mod d16_k_tests {
             // 0xffff + 2**32 * 0x8000 == 140737488420863
             // 9223372041149612032 // 140737488420863 == 65535
             Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff, 0]),
+            Case(vec![0x0001, 0x8000], vec![0x7000, 0x4000], vec![0x0001]),
+            Case(vec![0x7899, 0xbcde], vec![0x789a, 0xbcde], vec![0]),
+            Case(le_vec_u16("0x9c25b0d79a4e5ec95f28657deb3a4ef0e5c551a0"),
+                 le_vec_u16("0xd39396bb325dbf5d"),
+                 le_vec_u16("0x0000bceebb7803a068b8c8eef5b9")),
+            Case(le_vec_u16("0xb72406bf2b361790bfbf125e738ce735cecd1d529c25b0d79a4e5ec95f28657deb3a4ef0e5c551a0"),
+                 le_vec_u16("0x6df4c2dfdc781bfc2dae1207156c1a6aea0a572180213c261b13"),
+                 le_vec_u16("0x1aa637af3a1f551eb3dfc6f23a601")),
+
+            /* python3
+               import secrets
+               u = secrets.token_hex(512)
+               v = secrets.token_hex(128)
+               u // v
+             */
+            Case(le_vec_u16("0xadc7011f7cb2c70717809dea93d4dfb886e041a33736532d216d1cdb3e1b8003fde8b82bb45c9cf122c72d495a3810912277f40970519d9e634ed426b3b2a867267a3d2b92794ce64238bef94b30fd35ed24cd09b5428f7ba1c92da4fc47850057e45f1a5ac7559d1db39d89bf0e67fcc6a4e407ec2de17863418886ac3b2d041420eb89cf38adf170692c28231d6d3dd63e51bfc7b6b16063ba59f34d82ccf9ac0f73cd7c413468837eea72c9b6d96994edcdd3095ca09929dbe1b322b626493b378519357d1871a1b496be64858d9ece5079f3a842e4ea1760994aed31788d772af9823f410c5dfa8a8ed4320106fc446dcbcd48fdcdc6c44f49944418b180b9b08253b81b922acbaf99baeb8a3ea453c3fe8273c14c6a5d33f2f206e667bb93b7f755c715fb14dcc751939a9801310eed0c80e14ac5900f3794d97a46e73a34f70f9b336b9cd847da95e5d49f9aace97ff772bf258419b260d1c3059ff238abb2370aa3a227d579d28bd04c4de2e749b826ae0ce8279a2df60de27c12ed869c6e7c74089feb4051873a151e6f7d050dcd51157f3d270b02a678274dd357b251a4102368411072c0ce475c46e754092aed0384d67045f54e9d9e1e71f70968a9526b6b21da2998458f3e22925ba104b0656cb786123ec58a11f4f03a4e311c9e73bf66e97067fdfeb5c98ea3e194dd3cd3cdbc893fd7db4501686e1d9fc16a"),
+                 le_vec_u16("0xa5197e1da39f842701db6e381f154501702ef1dcb2ae5cdc8122a3782ee00e9a2b13e0468a26afa3921ff6f3e5c09269e46dc373c61d09de3bc76be60578402878bdafbf89cf8f2b579367a9b92fb975d4291fd929eb5a4c6736e6275a879fc7b0a1cb6215e586c0b6d75be72c2e80fde4c9dd974c764428a65273a66fbb8e0e"),
+                 le_vec_u16("0x10d74a15716432f223505d3bde3a4c6b53bb2f730b8a959f18983805503f895fae7929756df468f1ed57e3544ffa851fcdd701d4ddf184c471696b99265e180205a454ecc1b24eeb76c4863be48314332f9ee41529187c16bd639937270ff0667048b7a6e197695c3ecbc82a107c2004d4801f79c60eb3b368dd2f72b6b3ed9ae9a8981a7843302cc4f5876a95adf3483c83d4d5ee10ca4a36e757100a08de24d9010f847409466ed05f54ad98fcc9496d598dca9624924e8e9a3ca1ee6c5ce34fa282f34b0cd5482a0038873eeb3c1a5b9b95dddf3cd62a876d5f4679652512113691038cc7173e68ec0751e2d807943aefbdb530786fcd7d387eb790b9db74be724334e7ba7ee1515343c73fbe1e50fb80c4601c67fc8242207a0cbe4d18f125b625c9a00f5b26d0cea96cb3aec5d7cc208f4c37a086b351db780a8b3af9ca15ce3d217f958eac02d4273ef4b9d5067ce6f3a8c2fda216fe09c7122eef94310678319b1575e050ebad4c700816e62ac4643bcaa1d9390340cab33a91f254218")),
         ];
 
         for case in cases {
