@@ -15,8 +15,8 @@ pub fn to_u16(s: &[u8]) -> D16 {
     for &hd in s.iter().rev() {
         match crate::hex::val(hd) {
             Ok(v) => {
-                log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", (1u32 << k*4));
-                n += v as u16 * (1u16 << k * 4);
+                // log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", 1u32 << k*4);
+                n += v as u16 * (1_u16 << k * 4);
                 k += 1;
             }
             Err(c) => panic!("bad hex char {}", c)
@@ -103,46 +103,44 @@ fn d16_normalize(w: &Vec<D16>, s: u32, expand: bool) -> Vec<D16> {
         }
     }
     for i in (1..m).rev() {
-        // we are careful about the case where c == 64.
         if s > 0 {
             wn[i] = (w[i] << s) | (w[i - 1] >> (D16::BITS - s));
         } else {
             wn[i] = w[i];
         }
-        // wn[i] = (w[i] << s) | _shr16_(w[i - 1], (D16::BITS - s) as u16);
     }
     wn[0] = w[0] << s;
     wn
 }
 
 pub fn _add32_(x: u32, y: u32) -> u32 {
-    if cfg!(debug_assertions) {
-        x.overflowing_add(y).0
-    } else {
-        x + y
-    }
+    x.overflowing_add(y).0
 }
 
-fn _mul32_(x: u32, y: u32) -> u32 {
-    if cfg!(debug_assertions) {
-        x.overflowing_mul(y).0
-    } else {
-        x * y
-    }
+pub fn _add32_16(x: u32, y: u16) -> u32 {
+    x.overflowing_add(y as u32).0
 }
 
-fn _mul_32_16_(x: u32, y: u16) -> u32 {
-    let (p, o) = x.overflowing_mul(y as u32);
-    assert!(!o);
-    p
+pub fn _add16_(x: u16, y: u16) -> u16 {
+    x.overflowing_add(y).0
 }
 
-pub fn _sub16_(x: u16, y: u16) -> (u16, bool) {
-    x.overflowing_sub(y)
+fn _mul32_16(x: u32, y: u16) -> u32 {
+    x.overflowing_mul(y as u32).0
 }
 
-pub fn _sub32_(x: u32, y: u32) -> (u32, bool) {
-    x.overflowing_sub(y)
+fn _mul_32_(x: u32, y: u32) -> u32 {
+    x.overflowing_mul(y).0
+}
+
+pub fn _sub16_(x: u16, y: u16) -> u16 {
+    x.overflowing_sub(y).0
+}
+
+pub fn _sub32_(x: u32, y: u32) -> (u32, u32) {
+    //(x.saturating_sub(y), false)
+    let t = x.overflowing_sub(y);
+    (t.0, t.1 as u32)
 }
 
 fn magnitude(digits: &Vec<u16>) -> u128 {
@@ -155,99 +153,80 @@ fn magnitude(digits: &Vec<u16>) -> u128 {
     v
 }
 
+const BASE: u32 = 1 << 16;
+
 fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
-    log::info!("{}", "-".repeat(70));
     let m = u.len();
     let n = v.len();
-    assert!(n >= 1 && v[n - 1] > 0 && m >= n);
-    let s = d16_nlz(v[n - 1] as D16); // 0 <= s <= 15
+    assert!(n > 1 && v[n - 1] > 0 && m >= n);
+    let s = d16_nlz(v[n - 1]);
+    assert!(s <= 15);
     let vn = d16_normalize(&v, s, false);
     let mut un = d16_normalize(&u, s, true);
-    log::info!("Normalized Divisor: {v:?} << {s} ==> {vn:?}");
-    log::info!("Normalized Dividend: {u:?} << {s} ==> {un:?}");
-    const BASE: u32 = 1 << 16;
-    const BASE_MASK: u32 = BASE - 1;
     let mut q: u32 = 0;
     let mut quotient = vec![0u16; m - n + 1];
 
     for j in (0..=m - n).rev() {
-        log::info!("Iteration {j}: m = {m}, n = {n}, m-n = {}", m-n);
         #[allow(unused_labels)]
         'D3: { // calculate q
             let mut r: u32 = 0;
-            let un_s2d: u32 = (un[j + n] as u32 * BASE) + un[j + n - 1] as u32;
+            let un_s2d: u32 = _add32_16(_mul32_16(BASE, un[j + n]), un[j + n - 1]);
             let vn_ld: u32 = vn[n - 1] as u32;
             q = un_s2d / vn_ld;
             r = un_s2d % vn_ld;
             log::info!("\tD3. Calculate q.");
-            log::info!("\t\tj = {j}, {un_s2d}/{vn_ld}, r = {}, q = {}", r, q);
+            // log::info!("\t\tj = {j}, {un_s2d}/{vn_ld}, r = {}, q = {}", r, q);
+            // log::info!("\t\tq_correction: q = {q}, v[n-2] = {}, _mul32_(q, vn[n - 2] as u32) = {},  vn[n-1] = {vn_ld}, r = {r}, un[j+n-2] = {}, (_mul32_(BASE, r) + un[j + n - 2] as u32) = {}", (vn[n - 2] as u32), _mul32_(q, vn[n - 2] as u32), (un[j + n - 2] as u32), (_mul32_(BASE, r) + un[j + n - 2] as u32));
             while q >= BASE ||
-                _mul32_(q, vn[n - 2] as u32) > (_mul32_(BASE, r) + un[j + n - 2] as u32) {
-                log::info!("\t\tq_correction: q = {q}, v[n-1] = {vn_ld}, vn[n-2] = {}, r = {r}, un[j+n-2] = {}", (vn[n - 2] as u32), (un[j + n - 2] as u32));
+                r < BASE &&
+                    _mul32_16(q, vn[n - 2]) > _add32_16(_mul_32_(BASE, r), un[j + n - 2]) {
                 q -= 1;
                 r += vn_ld;
-                if r >= BASE {
-                    break;
-                }
             }
         }
-        let mut t: i32 = 0;
+        let mut t: i16 = 0;
         //
         #[allow(unused_labels)]
         'D4: {
             // multiply and subtract
             log::info!("\tD4. multiply and subtract");
             let mut k: u32 = 0;
-            let mut o1 = false;
-            let mut o2 = false;
-            let mut o3 = false;
             for i in 0..n {
-                // assert_eq!(k & 0xFFFF0000u32 as i32, 0);
-                let p: u32 = _mul32_(q, vn[i] as u32);
-                log::info!("\t\tmul_sub: q = {q}, v[{i}] = {:x}, p = {p:x}", vn[i]);
-                log::info!("\t\tmul_sub: un[{}] = {:x}, p & 0xFFFF = {}, t1 = {:?}", i+j, un[i+j], p & 0xFFFF, _sub32_(un[i + j] as u32, (p & 0xFFFF)));
-                let (t1, o1) = _sub32_(un[i + j] as u32, (p & 0xFFFF));
-                log::info!("\t\tmul_sub: t1 = {t1:x}, o1 = {o1}");
-                let (t2, o2) = _sub32_(t1, k);
-                log::info!("\t\tmul_sub: t2 = {t2:x}, o2 = {o2}");
-                un[i + j] = t2 as u16;
-
-                assert!(o1 as u16 + o2 as u16 <= 2);
-                o3 = true;
-                let (k3, _o3_) = _sub32_((p >> D16::BITS), (t2 >> 16));
-                k = k3;
+                let p: u32 = _mul32_16(q, vn[i]);
+                let (t, c1) = _sub32_(un[i + j] as u32, p & 0xFFFF);
+                let t = t & 0xFFFF;
+                let (t, c2) = _sub32_(t, k);
+                let t = t & 0xFFFF;
+                un[i + j] = t as u16;
+                let (k3, c3) = _sub32_(p >> D16::BITS, t >> 16);
+                k = k3 + c1 + c2 + c3;
             }
-            let temp = (un[j + n] as u32);
-            un[j + n] = temp
-                .overflowing_sub(k).0 // as u16;
-                .overflowing_sub(o1 as u32 + o2 as u32).0 as u16;
-            t = (temp as u32)
-                .overflowing_sub(k as u32).0 // ;
-                .overflowing_sub(o1 as u32 + o2 as u32).0 as i32;
+            t = _sub16_(un[j + n], k as u16) as i16;
+            un[j + n] = t as u16;
         }
+        //
         #[allow(unused_labels)]
         'D5: {
             quotient[j] = q as u16; // tentative quotient digit
         }
+        //
         #[allow(unused_labels)]
-        'D6: { // add back
+        'D6: {
+            // add back
             if t < 0 {
-                log::warn!("\tD6. add-back");
+                log::info!("\tD6. add-back");
                 quotient[j] = quotient[j] - 1;
-                let mut k: u32 = 0;
+                let mut k: u16 = 0;
                 for i in 0..n {
-                    let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
+                    // let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
+                    let mut t = _add32_16(_add32_16(un[i + j] as u32, vn[i]), k);
                     un[i + j] = t as u16;
-                    k = (t >> D16::BITS) as u32;
+                    k = (t >> D16::BITS) as u16;
                 }
-                un[j + n] = un[j + n] + k as D16;
+                un[j + n] = _add16_(un[j + n], k);
             }
         }
-        log::info!("Step Result: j = {j}, quotient = {quotient:?}");
     }
-    log::info!("");
-    log::info!("Result: quotient = {quotient:?}");
-    log::info!("{}", "-".repeat(70));
     quotient
 }
 
@@ -299,38 +278,86 @@ mod d16_k_tests {
     }
 
     #[test]
-    fn kat() {
+    fn kat_unsigned_mul_sub() {
         init_logger(true);
         struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
         let cases: Vec<Case> = vec![
-            Case(vec![0xffff, 0xffff], vec![0x0000, 0x0001], vec![0xffff]),
-            Case(vec![0x7899, 0xbcde], vec![0x789a, 0xbcde], vec![0]),
+            // Shows that multiply-and-subtract quantity cannot be treated as signed.
+            // 2**16 * 0xfffe + 2**48 * 0x8000 == 9223372041149612032
+            // 0xffff + 2**32 * 0x8000 == 140737488420863
+            // 9223372041149612032 // 140737488420863 == 65535
+            Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff, 0]),
+        ];
+        for case in cases {
+            let q = div(&case.0, &case.1);
+            assert_eq!(q, case.2);
+        }
+    }
+
+    #[test]
+    fn kat_add_back_01() {
+        init_logger(true);
+        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
+        let cases: Vec<Case> = vec![
+            // add-back required
+            // 0x0003 + 2**16 * 0x0000 + 2**32 * 0x8000 == 140737488355331
+            // 140737488355331 // 35184372088833 == 3
+            Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
+        ];
+        for case in cases {
+            let q = div(&case.0, &case.1);
+            assert_eq!(q, case.2);
+        }
+    }
+
+    #[test]
+    fn kat_add_back_02() {
+        init_logger(true);
+        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
+        let cases: Vec<Case> = vec![
+            // add-back required
+            // 9223231299366420480 // 140737488355329 == 65534
+            Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe, 0]),
+        ];
+        for case in cases {
+            let q = div(&case.0, &case.1);
+            assert_eq!(q, case.2);
+        }
+    }
+
+    #[test]
+    fn kat_generic() {
+        init_logger(true);
+        struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
+        let cases: Vec<Case> = vec![
+            //Case(vec![0xffff, 0xffff], vec![0x0000, 0x0001], vec![0xffff]), // pass
+            Case(vec![0x7899, 0xbcde], vec![0x789a, 0xbcde], vec![0]),  // pass
 
             // 0x89ab + 2**16*0x4567 + 2**32 * 0x0123 == 1250999896491
             // 2**16*0x0001 == 65536
             // 1250999896491 / 65536
-            Case(vec![0x89ab, 0x4567, 0x0123], vec![0x0000, 0x0001], vec![0x4567, 0x0123]),
+            Case(vec![0x89ab, 0x4567, 0x0123], vec![0x0000, 0x0001], vec![0x4567, 0x0123]),  // pass
 
             // Shows that first q_hat can = b + 1.
             // (0xfffe * 2**16 + 0x8000 * 2**32) == 140741783191552
             // (0xffff +  2**16 * 0x8000) == 2147549183
-            // (140741783191552, 2147549183, 65535)
-            Case(vec![0, 0xfffe, 0x8000], vec!(0xffff, 0x8000), vec!(0xffff, 0x0000)),
+            // 140741783191552 / 2147549183 == 65535
+            Case(vec![0, 0xfffe, 0x8000], vec!(0xffff, 0x8000), vec!(0xffff, 0x0000)),  // pass
 
             // add-back required
             // 0x0003 + 2**16 * 0x0000 + 2**32 * 0x8000 == 140737488355331
             // 140737488355331 // 35184372088833 == 3
-            // Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
+            Case(vec![0x0003, 0x0000, 0x8000], vec!(0x0001, 0x0000, 0x2000), vec!(0x0003)),
 
             // add-back required
             // 9223231299366420480 // 140737488355329 == 65534
-            // Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe, 0]),
+            Case(vec![0, 0, 0x8000, 0x7fff], vec![1, 0, 0x8000], vec![0xfffe, 0]),
 
             // Shows that multiply-and-subtract quantity cannot be treated as signed.
             // 2**16 * 0xfffe + 2**48 * 0x8000 == 9223372041149612032
             // 0xffff + 2**32 * 0x8000 == 140737488420863
-            // 9223372041149612032 // 140737488420863
-            //Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff]),
+            // 9223372041149612032 // 140737488420863 == 65535
+            Case(vec![0, 0xfffe, 0, 0x8000], vec![0xffff, 0, 0x8000], vec![0xffff, 0]),
         ];
 
         for case in cases {
