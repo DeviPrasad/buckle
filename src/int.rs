@@ -282,7 +282,6 @@ impl Int {
             }
             assert_eq!(bit % 64, 0);
         }
-        log::info!("count_ones: {self}, {c}, {mssb}");
         assert!((c == 0 && mssb == -1) || (c > 0 && mssb >= 0));
         (c, mssb)
     }
@@ -772,7 +771,7 @@ impl Int {
                     let (t2, o2) = t1.overflowing_sub(k as u64);
                     // t = un.mag[(i + j) as usize] as i128 - k - (p && BASE_MASk) as i128;
                     un.mag[(i + j) as usize] = t2;
-                    let (k1, o3) = (p >> Digit::BITS).overflowing_sub(t >> Digit::BITS) ;
+                    let (k1, o3) = (p >> Digit::BITS).overflowing_sub(t >> Digit::BITS);
                     k = k1; // k = (p >> Digit::BITS) - (t >> Digit::BITS);
                 }
                 t = un.mag[(j + n) as usize] as u128 - k;
@@ -808,31 +807,18 @@ impl Int {
     pub fn divide_by_digit(&self, d: Digit) -> (Int, Int) {
         assert!(d > 0);
         self.valid();
-
-        let num = self;
-        let len = num.digits_len();
-        let mut q = Int::from_le_digits_vec(vec![0; len as usize], 0);
-        // note l = n-1 where n is the length of the dividend, and hence, of the result.
-        let l = q.digits_len() as usize - 1;
         const BASE: u128 = 1 << 64;
+
+        let len = self.digits_len();
+        // note l = n-1 where n is the length of the dividend, and hence, of the result.
         // in the following, i ranges over n-1, n-2,...,0.
         // therefore, l-i ranges over (n-1)-(n-1), (n-1)-(n-2),...,(n-1-0) = 0,1,...n-1
-        // let mut r: Digit = 0;
-        /*for (i, &nd) in num.mag.iter().rev().enumerate() {
-            // special case - two double-words divided by a double-word.
-            // use the method which specialises knuth's division.
-            let (tq, tr) = bits::div64(r, nd, d);
-            // now fall back to Rust's 128-bit arithmetic.
-            let n: u128 = (r as u128) * BASE | nd as u128;
-            (q.mag[l - i], r) = (tq, tr);
-            // make sure answers match!
-            assert_eq!((tq, tr), ((n / (d as u128)) as u64, (n % (d as u128)) as u64));
-        }*/
+        let mut q = Int::from_le_digits_vec(vec![0; len as usize], 0);
         let mut r: u128 = 0;
         {
-            for (i, &nd) in num.mag.iter().rev().enumerate() {
+            let l = q.digits_len() as usize - 1;
+            for (i, &nd) in self.mag.iter().rev().enumerate() {
                 let tq = (r * BASE + nd as u128) / (d as u128);
-                log::info!("divide by digit: nd = {nd}, r = {r}, r * BASE = {}, num = {}, divisor = {d}, q = {tq}", r * BASE, (r * BASE + nd as u128));
                 assert_eq!((tq >> 64) as u64, 0);
                 r = (r * BASE + nd as u128) - (tq * d as u128);
                 (q.mag[l - i], r) = (tq as Digit, r);
