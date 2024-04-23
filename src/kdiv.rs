@@ -234,7 +234,14 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
     }
     quotient
 }
-
+/*
+ * Simple test mode:
+    RUSTFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused"
+        RUSTDOCFLAGS="--cfg=release_test  -Adead_code -Aunused" cargo test -- --show-output
+ * and, for 'release' mode testing:
+    RUSTFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused"
+        RUSTDOCFLAGS="--cfg=release_test  -Adead_code -Aunused" cargo test --release -- --show-output
+*/
 #[cfg(test)]
 mod d16_k_tests {
     use crate::init_logger;
