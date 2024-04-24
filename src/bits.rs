@@ -50,9 +50,9 @@ pub fn add64(x: u64, y: u64) -> u64 {
 }
 
 
-pub fn sub128c(x: u128, y: u128) -> (u128, u128) {
+pub fn sub128c(x: u128, y: u128) -> (u128, u32) {
     let t = x.overflowing_sub(y);
-    (t.0, t.1 as u128)
+    (t.0, t.1 as u32)
 }
 
 pub fn sub64(x: u64, y: u64) -> u64 {

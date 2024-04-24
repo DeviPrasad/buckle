@@ -748,6 +748,11 @@ impl Int {
         self.mag[i as usize]
     }
 
+    pub fn digit128(&self, i: u32) -> u128 {
+        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
+        self.mag[i as usize] as u128
+    }
+
     pub fn dec(&mut self, i: u32) {
         self.update(i, self.digit(i) - 1);
     }
@@ -814,13 +819,13 @@ impl Int {
                 let mut k: u128 = 0;
                 for i in 0..n {
                     let p: u128 = mul128_64(q, vn.digit(i));
-                    let (t, c1) = sub128c(un.digit(i + j) as u128, p & BASE_MASK);
+                    let (t, c1): (u128, u32) = sub128c(un.digit128(i + j), p & BASE_MASK);
                     let t = t & BASE_MASK;
-                    let (t, c2) = sub128c(t, k);
+                    let (t, c2): (u128, u32) = sub128c(t, k);
                     let t = t & BASE_MASK;
                     un.update(i + j, t as Digit);
                     let (k3, c3) = sub128c(p >> Digit::BITS, t >> 64);
-                    k = k3 + c1 + c2 + c3;
+                    k = k3 + (c1 + c2 + c3) as u128;
                 }
                 t = sub64(un.digit(j + n), k as u64) as i64;
                 un.update(j + n, t as u64);
