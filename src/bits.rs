@@ -6,7 +6,7 @@ use crate::U128;
 // The borrow input must be 0 or 1.
 // The borrow_out is guaranteed to be 0 or 1.
 #[allow(dead_code)]
-pub fn sub_with_borrow(x: Digit, y: Digit, borrow: Digit) -> (/* diff */ Digit, /* borrow_out */ Digit) {
+pub fn sbb(x: Digit, y: Digit, borrow: Digit) -> (/* diff */ Digit, /* borrow_out */ Digit) {
     debug_assert!(borrow <= 1);
     let (diff, o1) = x.overflowing_sub(y);
     let (diff, o2) = diff.overflowing_sub(borrow);
@@ -15,12 +15,16 @@ pub fn sub_with_borrow(x: Digit, y: Digit, borrow: Digit) -> (/* diff */ Digit, 
 }
 
 #[allow(dead_code)]
-pub fn add_with_carry(x: Digit, y: Digit, carry: Digit) -> (/* sum */ Digit, /* carry_out */ Digit) {
+pub fn adc(x: Digit, y: Digit, carry: Digit) -> (/* sum */ Digit, /* carry_out */ Digit) {
     debug_assert!(carry <= 1);
     let (sum, o1) = x.overflowing_add(y);
     let (sum, o2) = sum.overflowing_add(carry);
     assert!(o1 as Digit <= 1 && o2 as Digit <= 1);
     (sum, o1 as Digit + o2 as Digit)
+}
+
+pub fn mul128(x: u128, y: u128) -> u128 {
+    x.overflowing_mul(y).0
 }
 
 // This is the simplest version of mul64 using Rust's 128-bit multiplication
@@ -29,69 +33,47 @@ pub fn mul64(x: Digit, y: Digit) -> U128 {
     U128 { lo: r2 as Digit, hi: (r2 >> 64) as Digit }
 }
 
-//
-// The following functions ignore overflows in arithmetic operations.
-// The debug builds choose 'overflowing_xxx' flavors of the required operation.
-// They appear ugly for a reason.
-pub fn _mul_(x: Digit, y: Digit) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_mul(y).0
-    } else {
-        x * y
-    }
+pub fn mul64_64(x: Digit, y: Digit) -> Digit {
+    x.overflowing_mul(y).0
 }
 
-pub fn _mul128_(x: u128, y: u128) -> u128 {
-    if cfg!(debug_assertions) {
-        x.overflowing_mul(y).0
-    } else {
-        x * y
-    }
+pub fn mul128_64(x: u128, y: u64) -> u128 {
+    x.overflowing_mul(y as u128).0
 }
 
-pub fn _div_(x: Digit, y: Digit) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_div(y).0
-    } else {
-        x / y
-    }
+pub fn add128_64(x: u128, y: u64) -> u128 {
+    x.overflowing_add(y as u128).0
 }
 
-pub fn _sub_(x: Digit, y: Digit) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_sub(y).0
-    } else {
-        x - y
-    }
+pub fn add64(x: u64, y: u64) -> u64 {
+    x.overflowing_add(y).0
 }
 
-pub fn _add_(x: Digit, y: Digit) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_add(y).0
-    } else {
-        x + y
-    }
+
+pub fn sub128c(x: u128, y: u128) -> (u128, u128) {
+    let t = x.overflowing_sub(y);
+    (t.0, t.1 as u128)
 }
 
-pub fn _shl_(x: Digit, n: u32) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_shl(n).0
-    } else {
-        x << n
-    }
+pub fn sub64(x: u64, y: u64) -> u64 {
+    x.overflowing_sub(y).0
 }
 
-pub fn _shr_(x: Digit, n: u32) -> Digit {
-    if cfg!(debug_assertions) {
-        x.overflowing_shr(n).0
-    } else {
-        x >> n
-    }
+pub fn div64(x: Digit, y: Digit) -> Digit {
+    x.overflowing_div(y).0
+}
+
+pub fn shl64(x: Digit, n: u32) -> Digit {
+    x.overflowing_shl(n).0
+}
+
+pub fn shr64(x: Digit, n: u32) -> Digit {
+    x.overflowing_shr(n).0
 }
 //
 
 // Divide a 128 bit number by a 64 bit number,
-pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
+pub fn div64_rem64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
     assert!(divisor > 0, "div64 - divide by zero error");
     // assert!(divisor > hi, "div64 - quotient overflow error");
 
@@ -102,11 +84,11 @@ pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
     const BASE: u64 = 1 << 32;
     const MASK_32: u64 = BASE - 1;
 
-    let s: u32 = leading_zeroes_count(divisor);
+    let s: u32 = clz(divisor);
     // normalize the divider by stripping away all leading zeroes from it.
-    let dn64: Digit = _shl_(divisor, s);
+    let dn64: Digit = shl64(divisor, s);
     // break the divisor into two 32-bit digits (d1, d0) = y
-    let dn32_1: Digit = _shr_(dn64, 32);
+    let dn32_1: Digit = shr64(dn64, 32);
     let dn32_0: Digit = dn64 & MASK_32;
 
     // 'hi' normalized 64 bits
@@ -123,20 +105,20 @@ pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
     };
     debug_assert_eq!(_lo_normalized_ideal_, lo_normalized);
 
-    let hn64: Digit = _shl_(hi, s) | lo_normalized;
+    let hn64: Digit = shl64(hi, s) | lo_normalized;
     // 'lo' normalized 64 bits, destructured (ln32_1, ln32_0) = ln64
-    let ln64: Digit = _shl_(lo, s);
+    let ln64: Digit = shl64(lo, s);
     // higher 32 bits of ln64
-    let ln32_1: Digit = _shr_(ln64, 32);
+    let ln32_1: Digit = shr64(ln64, 32);
     // lower 32 bits of ln64
     let ln32_0: Digit = ln64 & MASK_32;
 
     // calculate q_hat
-    let mut q_hat_1: Digit = _div_(hn64, dn32_1);
-    let mut r_hat: Digit = _sub_(hn64, _mul_(q_hat_1, dn32_1));
-    while q_hat_1 >= BASE || _mul_(q_hat_1, dn32_0) > (_shl_(r_hat, 32) + ln32_1) {
+    let mut q_hat_1: Digit = div64(hn64, dn32_1);
+    let mut r_hat: Digit = sub64(hn64, mul64_64(q_hat_1, dn32_1));
+    while q_hat_1 >= BASE || mul64_64(q_hat_1, dn32_0) > (shl64(r_hat, 32) + ln32_1) {
         q_hat_1 -= 1;
-        r_hat = _add_(r_hat, dn32_1);
+        r_hat = add64(r_hat, dn32_1);
         if r_hat >= BASE {
             break
         }
@@ -144,26 +126,27 @@ pub fn div64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
 
     // multiply and subtract, and decrease j by 1, all at once!
     // update the dividend; ln32_1 is the next 'digit' included in u
-    let un21 = _sub_(_add_(_shl_(hn64, 32), ln32_1), _mul_(q_hat_1, dn64));
-    let mut q_hat_0: Digit = _div_(un21, dn32_1);
-    r_hat = _sub_(un21, _mul_(q_hat_0, dn32_1));
+    let un21 = sub64(add64(shl64(hn64, 32), ln32_1), mul64_64(q_hat_1, dn64));
+    let mut q_hat_0: Digit = div64(un21, dn32_1);
+    r_hat = sub64(un21, mul64_64(q_hat_0, dn32_1));
 
-    while q_hat_0 >= BASE || _mul_(q_hat_0, dn32_0) > _add_(_shl_(r_hat, 32), ln32_0) {
+    while q_hat_0 >= BASE || mul64_64(q_hat_0, dn32_0) > add64(shl64(r_hat, 32), ln32_0) {
         q_hat_0 -= 1;
-        r_hat = _add_(r_hat, dn32_1);
+        r_hat = add64(r_hat, dn32_1);
         if r_hat >= BASE {
             break
         }
     }
-    return (_add_(_shl_(q_hat_1, 32), q_hat_0),
-            (_sub_(_add_(_shl_(un21, 32), ln32_0), _mul_(q_hat_0, dn64))) >> s)
+    return (add64(shl64(q_hat_1, 32), q_hat_0),
+            (sub64(add64(shl64(un21, 32), ln32_0), mul64_64(q_hat_0, dn64))) >> s)
 }
 
-pub fn leading_zeroes_count(x: Digit) -> u32 {
-    Digit::BITS - len_binary_digit(x)
+// count of leading zeroes.
+pub fn clz(x: Digit) -> u32 {
+    Digit::BITS - bit_width(x)
 }
 
-pub(crate) fn len_binary_digit(a: Digit) -> u32 {
+pub(crate) fn bit_width(a: Digit) -> u32 {
     let mut len = 0;
     let mut x = a as usize;
     if x >= 1 << 32 {
@@ -204,10 +187,7 @@ pub const LEN_8: [u8; 256] = [
 #[cfg(test)]
 mod bits_test {
 
-    use env_logger::Builder;
-    use log::{info, LevelFilter};
-    use chrono::{DateTime, Local};
-    use crate::bits::div64;
+    use crate::bits::div64_rem64;
 
     fn init() {
         crate::init_logger(true)
@@ -217,63 +197,63 @@ mod bits_test {
     fn bits_div64() {
         init();
         {
-            let (q, r) = div64(0, 65537, 1);
+            let (q, r) = div64_rem64(0, 65537, 1);
             assert_eq!(q, 65537, "quotient");
             assert_eq!(r, 0, "reminder");
         }
         {
-            let (q, r) = div64(0, 65537, 2);
+            let (q, r) = div64_rem64(0, 65537, 2);
             assert_eq!(q, 65537 >> 1, "quotient");
             assert_eq!(r, 1, "reminder");
         }
         {
-            let (q, r) = div64(0, 100, 35);
+            let (q, r) = div64_rem64(0, 100, 35);
             assert_eq!(q, 2, "quotient");
             assert_eq!(r, 30, "reminder");
         }
         {
-            let (q, r) = div64(1, 100, 35);
+            let (q, r) = div64_rem64(1, 100, 35);
             assert_eq!(q, 527049830677415763, "quotient");
             assert_eq!(r, 11, "reminder");
         }
         {
-            let (q, r) = div64(32, 100, 35);
+            let (q, r) = div64_rem64(32, 100, 35);
             assert_eq!(q, 16865594581677304337, "quotient");
             assert_eq!(r, 17, "reminder");
         }
         {
-            let (q, r) = div64(0xFFFFFFFF, 0, 1 << 32);
+            let (q, r) = div64_rem64(0xFFFFFFFF, 0, 1 << 32);
             assert_eq!(q, 0xFFFFFFFF00000000, "quotient");
             assert_eq!(r, 0, "reminder");
         }
         {
-            let (q, r) = div64(0xFFFFFFFF, 0, 2 << 32);
+            let (q, r) = div64_rem64(0xFFFFFFFF, 0, 2 << 32);
             assert_eq!(q, 0x7FFFFFFF80000000, "quotient");
             assert_eq!(r, 0, "reminder");
         }
 
         {
-            let (q, r) = div64(0x0000000100000000, 0x000000000000FFFF, 0x0000100000000000);
+            let (q, r) = div64_rem64(0x0000000100000000, 0x000000000000FFFF, 0x0000100000000000);
             assert_eq!(q, 0x10000000000000, "quotient");
             assert_eq!(r, 0xFFFF, "reminder");
         }
         {
-            let (q, r) = div64(0x7FFF800000000000, 0x0000000000000000, 0x8000000000000001);
+            let (q, r) = div64_rem64(0x7FFF800000000000, 0x0000000000000000, 0x8000000000000001);
             assert_eq!(q, 0xFFFEFFFFFFFFFFFE, "quotient");
             assert_eq!(r, 0x1000000000002, "reminder");
         }
         {
-            let (q, r) = div64(0x7FFF000000000000, 0x000000000000FFFF, 0x8000000000000000);
+            let (q, r) = div64_rem64(0x7FFF000000000000, 0x000000000000FFFF, 0x8000000000000000);
             assert_eq!(q, 0xFFFE000000000000, "quotient");
             assert_eq!(r, 0xFFFF, "reminder");
         }
         {
-            let (q, r) = div64(0x7FFFFFFFFFFFFFFF, 0xFFFF00000000FFFF, 0xFF00000000000000);
+            let (q, r) = div64_rem64(0x7FFFFFFFFFFFFFFF, 0xFFFF00000000FFFF, 0xFF00000000000000);
             assert_eq!(q, 0x8080808080808080, "quotient");
             assert_eq!(r, 0x7FFF00000000FFFF, "reminder");
         }
         {
-            let (q, r) = div64(0x7FFFFFFFFFFFFFFF, 0xFFFF00000000FFFF, 0xFFFFFFFFFFFFFFFF);
+            let (q, r) = div64_rem64(0x7FFFFFFFFFFFFFFF, 0xFFFF00000000FFFF, 0xFFFFFFFFFFFFFFFF);
             assert_eq!(q, 0x8000000000000000, "quotient");
             assert_eq!(r, 0x7fff00000000ffff, "reminder");
         }

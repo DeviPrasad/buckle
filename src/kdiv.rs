@@ -232,6 +232,7 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
             }
         }
     }
+
     quotient
 }
 /*
@@ -290,7 +291,7 @@ mod d16_k_tests {
     }
 
     #[test]
-    fn kat_generic() {
+    fn kat() {
         init_logger(true);
         struct Case(Vec<D16>, Vec<D16>, Vec<u16>);
         let cases: Vec<Case> = vec![

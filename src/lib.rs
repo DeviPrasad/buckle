@@ -51,6 +51,7 @@ pub struct Int {
     // 'pos_lnzb' is the zero-based index of the lnzb within lnzd.
     // These two fields are invariants.
     // Zero-based index of the leading (or most-significant) non-zero digit in 'mag'.
+    // When Int magnitude is zero, 'pos_lnzd' == -1 and 'pos_lnzb' == -1.
     pos_lnzd: i32,
     pos_lnzb: i32,
     // The magnitude of the integer.
