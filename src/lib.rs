@@ -67,7 +67,6 @@ pub struct U128 {
     hi: Digit
 }
 
-mod int;
-mod bits;
-mod hex;
-mod kdiv;
+pub mod int;
+pub mod bits;
+pub mod hex;

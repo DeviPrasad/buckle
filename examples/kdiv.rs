@@ -1,10 +1,10 @@
 use std::ops::Div;
-
-use crate::{bits, Digit};
+use buckle::bits;
 
 //
 // https://news.ycombinator.com/item?id=26562819
 // https://skanthak.hier-im-netz.de/division.html
+// https://github.com/hcs0/Hackers-Delight/blob/master/divmnu.c.txt
 //
 
 type D16 = u16;
@@ -18,7 +18,7 @@ pub fn to_u16(s: &[u8]) -> D16 {
     let mut n: u16 = 0;
     let mut k: u16 = 0;
     for &hd in s.iter().rev() {
-        match crate::hex::val(hd) {
+        match buckle::hex::val(hd) {
             Ok(v) => {
                 // log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", 1u32 << k*4);
                 n += v as u16 * (1_u16 << k * 4);
@@ -245,8 +245,9 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
 */
 #[cfg(test)]
 mod d16_k_tests {
-    use crate::init_logger;
-    use crate::kdiv::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
+    use buckle::init_logger;
+    use crate::{D16, d16_nlz, d16_normalize, le_vec_u16};
+    use super::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
 
     #[test]
     fn u16_arith() {
@@ -415,3 +416,5 @@ mod d16_k_tests {
         }
     }
 }
+
+fn main() {}
