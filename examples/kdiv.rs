@@ -2,9 +2,12 @@ use std::ops::Div;
 use buckle::bits;
 
 //
+// Publicly available implementations.
 // https://news.ycombinator.com/item?id=26562819
 // https://skanthak.hier-im-netz.de/division.html
 // https://github.com/hcs0/Hackers-Delight/blob/master/divmnu.c.txt
+// https://github.com/chipjarred/KnuthAlgorithmD/blob/master/Sources/KnuthAlgorithmD/TupleMath.swift
+// https://github.com/0xProject/OpenZKP/blob/master/algebra/u256/src/arch/generic/knuth_division.rs#L89
 //
 
 type D16 = u16;
