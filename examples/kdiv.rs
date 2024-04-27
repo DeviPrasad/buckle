@@ -1,8 +1,23 @@
-use std::ops::Div;
+/*
+    Copyright [2024] [M. Devi Prasad]
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+*/
+
 use buckle::bits;
 
 //
-// Publicly available implementations.
+// The following is a list of publicly available implementations:
 // https://news.ycombinator.com/item?id=26562819
 // https://skanthak.hier-im-netz.de/division.html
 // https://github.com/hcs0/Hackers-Delight/blob/master/divmnu.c.txt
@@ -171,13 +186,13 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
     assert!(s <= 15);
     let vn = d16_normalize(&v, s, false);
     let mut un = d16_normalize(&u, s, true);
-    let mut q: u32 = 0;
+    let mut q: u32;
     let mut quotient = vec![0u16; m - n + 1];
 
     for j in (0..=m - n).rev() {
         #[allow(unused_labels)]
         'D3: { // calculate q
-            let mut r: u32 = 0;
+            let mut r: u32;
             let un_s2d: u32 = _add32_16(_mul32_16(BASE, un[j + n]), un[j + n - 1]);
             let vn_ld: u32 = vn[n - 1] as u32;
             q = un_s2d / vn_ld;
@@ -192,7 +207,7 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
                 r += vn_ld;
             }
         }
-        let mut t: i16 = 0;
+        let t: i16;
         //
         #[allow(unused_labels)]
         'D4: {
@@ -227,7 +242,7 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
                 let mut k: u16 = 0;
                 for i in 0..n {
                     // let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
-                    let mut t = _add32_16(_add32_16(un[i + j] as u32, vn[i]), k);
+                    let t = _add32_16(_add32_16(un[i + j] as u32, vn[i]), k);
                     un[i + j] = t as u16;
                     k = (t >> D16::BITS) as u16;
                 }
