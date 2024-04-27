@@ -20,7 +20,7 @@ use std::iter::{Chain, Repeat, Take};
 use std::slice::Iter;
 
 use crate::{Digit, Int, IntStrCase, IntStrPadding, U128};
-use crate::bits::{adc, add128_64, add64, bit_width, mul128, mul128_64, mul64, sbb, sub128c, sub64};
+use crate::bits::{adc, add128_64, add64, bit_width, mul128, mul128_64, mul64, sbb};
 
 impl std::fmt::Display for Int {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -332,6 +332,52 @@ impl Int {
         self.valid();
     }
 
+    pub fn window(&mut self, start: u32, count: u32) -> Int {
+        self.valid();
+        let n = self.mag.len();
+        assert!(n > start as usize && n > (start as usize + count as usize), "window - bad arguments");
+        Int::from_le_digits_vec(self.mag[start as usize..=(start + count) as usize].to_vec())
+    }
+
+    pub fn window_update(&mut self, start: u32, count: u32, that: &Int) {
+        self.valid();
+        let n = self.width();
+        assert!(n > start && n > (start + count), "window - bad arguments");
+        assert!(that.width() >= count, "window - bad 'that' argument");
+        for (i, s) in that.mag.iter().enumerate() {
+            self.mag[start as usize + i] = *s;
+        }
+        self.set_invariants();
+        self.valid();
+    }
+
+
+    pub fn digit(&self, i: u32) -> Digit {
+        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
+        self.mag[i as usize]
+    }
+
+    pub fn last_digit(&self) -> Digit {
+        assert!(self.width() > 0, "Int::last_digit - empty magnitude");
+        self.mag[(self.width() - 1) as usize]
+    }
+
+    pub fn digit128(&self, i: u32) -> u128 {
+        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
+        self.mag[i as usize] as u128
+    }
+
+    pub fn dec(&mut self, i: u32) {
+        self.digit_update(i, self.digit(i) - 1);
+    }
+
+    pub fn digit_update(&mut self, i: u32, rval: Digit) {
+        assert!(i < self.width(), "Int::update - invalid index {i} >= {}", self.width());
+        self.mag[i as usize] = rval;
+        self.set_invariants();
+        self.valid();
+    }
+
     // returns (count_of_one_bits, most_significant_set_bit)
     pub fn count_ones(&self) -> (u32, u32) {
         let mut c = 0;
@@ -619,6 +665,20 @@ impl Int {
         prod
     }
 
+    pub fn mul_digit(&self, d: Digit) -> Int {
+        let mut prod: Vec<Digit> = vec![0; (self.width() + 1) as usize];
+        let mut c: u64 = 0;
+        let mut o: bool;
+        for (i, &a) in self.mag.iter().enumerate() {
+            let p = a as u128 * d as u128;
+            (prod[i], o) = (p as u64).overflowing_add(c);
+            c = (p >> 64) as Digit + o as u64;
+        }
+        let n = prod.len() - 1;
+        prod[n] = c;
+        Int::from_le_digits_vec(prod)
+    }
+
     pub fn remainder(&self, divisor: &Int, quotient: &Int) -> Int {
         let prod = divisor.mul(&quotient);
         let (r, _) = self.sub_abs(&prod);
@@ -739,27 +799,6 @@ impl Int {
         Self::_normalize_common_(wn, &self.mag, s, m)
     }
 
-    pub fn digit(&self, i: u32) -> Digit {
-        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
-        self.mag[i as usize]
-    }
-
-    pub fn digit128(&self, i: u32) -> u128 {
-        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
-        self.mag[i as usize] as u128
-    }
-
-    pub fn dec(&mut self, i: u32) {
-        self.update(i, self.digit(i) - 1);
-    }
-
-    pub fn update(&mut self, i: u32, rval: Digit) {
-        assert!(i < self.width(), "Int::update - invalid index {i} >= {}", self.width());
-        self.mag[i as usize] = rval;
-        self.set_invariants();
-        self.valid();
-    }
-
     // pre-conditions:
     // divisor is compact. divisor.digits_len() > 1, dividend.digits_len() >= divisor.digits_len()
     //
@@ -775,6 +814,7 @@ impl Int {
         // this is the number of bits to be right-shifted to normalize the operands
         let s = divisor.clz();
         let vn = divisor.normalize(s);
+        let vnw = vn.width(); // the number of digits in vn
         // normalize the divider by stripping away leading zeroes.
         assert_eq!(vn.mag[vn.pos_lnzd as usize] & (1 << 63), 1 << 63);
         let mut un = dividend.expand_normalize(s);
@@ -785,7 +825,8 @@ impl Int {
 
         for j in (0..=m - n).rev() {
             #[allow(unused_labels)]
-            'D3: { // calculate q
+            'D3: {
+                // calculate q
                 let un_s2d: u128 = add128_64(mul128_64(BASE, un.digit(j + n)), un.digit(j + n - 1));
                 let vn_ld: u128 = vn.digit(n - 1) as u128;
                 q = un_s2d / vn_ld;
@@ -798,45 +839,36 @@ impl Int {
                     r += vn_ld;
                 }
             }
-            let t: i64;
             //
             #[allow(unused_labels)]
             'D4: {
                 // multiply and subtract
-                log::info!("\tD4. multiply and subtract");
-                let mut k: u128 = 0;
-                for i in 0..n {
-                    let p: u128 = mul128_64(q, vn.digit(i));
-                    let (t, c1): (u128, u32) = sub128c(un.digit128(i + j), p & BASE_MASK);
-                    let t = t & BASE_MASK;
-                    let (t, c2): (u128, u32) = sub128c(t, k);
-                    let t = t & BASE_MASK;
-                    un.update(i + j, t as Digit);
-                    let (k3, c3) = sub128c(p >> Digit::BITS, t >> 64);
-                    k = k3 + (c1 + c2 + c3) as u128;
-                }
-                t = sub64(un.digit(j + n), k as u64) as i64;
-                un.update(j + n, t as u64);
+                let q_mul_vn_ = vn.mul_digit(q as Digit);
+                let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
+                let (un_sub_q_mul_vn, _) = un_j_n.sub(&q_mul_vn_);
+                un.window_update(j, vnw, &un_sub_q_mul_vn);
+                assert_eq!(un.digit(j+vnw) as i64, un_sub_q_mul_vn.last_digit() as i64);
             }
+            let window_last_digit: i64 = un.digit(j+vnw) as i64;
             //
             #[allow(unused_labels)]
             'D5: {
-                quotient.update(j, q as Digit); // tentative quotient digit
+                quotient.digit_update(j, q as Digit); // tentative quotient digit
             }
             //
             #[allow(unused_labels)]
             'D6: {
                 // add back
-                if t < 0 {
+                if window_last_digit < 0 {
                     log::info!("\tD6. add-back");
                     quotient.dec(j);
                     let mut k: Digit = 0;
                     for i in 0..n {
                         let t = add128_64(add128_64(un.digit(i + j) as u128, vn.digit(i)), k);
-                        un.update(i + j, t as Digit);
+                        un.digit_update(i + j, t as Digit);
                         k = (t >> Digit::BITS) as Digit;
                     }
-                    un.update(j + n, add64(un.digit(j + n), k));
+                    un.digit_update(j + n, add64(un.digit(j + n), k));
                 }
             }
         }
