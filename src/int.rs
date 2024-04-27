@@ -20,7 +20,7 @@ use std::iter::{Chain, Repeat, Take};
 use std::slice::Iter;
 
 use crate::{Digit, Int, IntStrCase, IntStrPadding, U128};
-use crate::bits::{adc, add128_64, add64, bit_width, mul128, mul128_64, mul64, sbb};
+use crate::bits::{adc, add128_64, bit_width, mul128, mul128_64, mul64, sbb};
 
 impl std::fmt::Display for Int {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -810,16 +810,21 @@ impl Int {
         let m = dividend.width();
         let n = divisor.width();
         assert!(n > 1 && m >= n);
+
         // count of leading zeroes in the divisor.
         // this is the number of bits to be right-shifted to normalize the operands
         let s = divisor.clz();
+
         let vn = divisor.normalize(s);
         let vnw = vn.width(); // the number of digits in vn
         // normalize the divider by stripping away leading zeroes.
         assert_eq!(vn.mag[vn.pos_lnzd as usize] & (1 << 63), 1 << 63);
+
         let mut un = dividend.expand_normalize(s);
+
         const BASE: u128 = 1 << 64;
         const BASE_MASK: u128 = BASE - 1;
+
         let mut q: u128;
         let mut quotient = Int::from_le_digits_vec(vec![0_u64; (m - n + 1) as usize]);
 
@@ -843,6 +848,7 @@ impl Int {
             #[allow(unused_labels)]
             'D4: {
                 // multiply and subtract
+                log::info!("\tD4. multiply and subtract");
                 let q_mul_vn_ = vn.mul_digit(q as Digit);
                 let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
                 let (un_sub_q_mul_vn, _) = un_j_n.sub(&q_mul_vn_);
@@ -861,14 +867,10 @@ impl Int {
                 // add back
                 if window_last_digit < 0 {
                     log::info!("\tD6. add-back");
-                    quotient.dec(j);
-                    let mut k: Digit = 0;
-                    for i in 0..n {
-                        let t = add128_64(add128_64(un.digit(i + j) as u128, vn.digit(i)), k);
-                        un.digit_update(i + j, t as Digit);
-                        k = (t >> Digit::BITS) as Digit;
-                    }
-                    un.digit_update(j + n, add64(un.digit(j + n), k));
+                    quotient.dec(j); // decrease quotient[j] by 1
+                    let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
+                    let un_j_n = un_j_n.add(&vn).0; // we must ignore the carry
+                    un.window_update(j, vnw, &un_j_n);
                 }
             }
         }
