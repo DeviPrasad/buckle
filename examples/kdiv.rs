@@ -24,6 +24,8 @@ use buckle::bits;
 // https://github.com/chipjarred/KnuthAlgorithmD/blob/master/Sources/KnuthAlgorithmD/TupleMath.swift
 // https://github.com/0xProject/OpenZKP/blob/master/algebra/u256/src/arch/generic/knuth_division.rs#L89
 //
+// A commentary
+// https://skanthak.hier-im-netz.de/division.html
 
 type D16 = u16;
 

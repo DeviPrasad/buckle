@@ -16,8 +16,7 @@
 
 use std::cmp::{max, min};
 use std::fmt::Formatter;
-use std::iter::{Chain, Repeat, Take};
-use std::slice::Iter;
+use std::iter;
 
 use crate::{Digit, Int, IntStrCase, IntStrPadding, U128};
 use crate::bits::{adc, add128_64, bit_width, mul128, mul128_64, mul64, sbb};
@@ -351,7 +350,6 @@ impl Int {
         self.valid();
     }
 
-
     pub fn digit(&self, i: u32) -> Digit {
         assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
         self.mag[i as usize]
@@ -473,13 +471,12 @@ impl Int {
         n2.valid();
 
         let (n1_iter, n2_iter, len) = Self::width_equalizer(&self, &n2);
-        assert_eq!(n1_iter.clone().count(), n2_iter.clone().count());
 
         let mut carry: Digit = 0;
         let mut mag = vec![0; len as usize];
-        n1_iter.zip(n2_iter).enumerate().for_each(|(i, (&x, &y))| {
+        for (i, (&x, &y)) in n1_iter.zip(n2_iter).enumerate() {
             (mag[i], carry) = adc(x, y, carry);
-        });
+        }
         let res = Int::from_le_digits_vec(mag);
         res.valid();
         (res, carry)
@@ -489,39 +486,37 @@ impl Int {
         self.add(&n2).0
     }
 
-    fn width_equalizer<'a>(n1: &'a Int, n2: &'a Int) -> (Chain<Iter<'a, Digit>, Take<Repeat<&'a Digit>>>, Chain<Iter<'a, Digit>, Take<Repeat<&'a Digit>>>, u32) {
+    fn width_equalizer<'a>(n1: &'a Int, n2: &'a Int) -> (impl Iterator<Item=&'a Digit>,
+                                                         impl Iterator<Item=&'a Digit>,
+                                                         u32) {
         let (l1, l2) = (n1.width(), n2.width());
         if l1 > l2 {
-            let xd = (l1 - l2) as usize;
-            (n1.mag.iter().chain(std::iter::repeat(&0).take(0)),
-             n2.mag.iter().chain(std::iter::repeat(&0).take(xd)),
+            (n1.mag.iter().chain(iter::repeat(&0).take(0)),
+             n2.mag.iter().chain(iter::repeat(&0).take((l1 - l2) as usize)),
              l1)
         } else if l2 > l1 {
-            let xd = (l2 - l1) as usize;
-            (n1.mag.iter().chain(std::iter::repeat(&0).take(xd)),
-             n2.mag.iter().chain(std::iter::repeat(&0).take(0)),
+            (n1.mag.iter().chain(iter::repeat(&0).take((l2 - l1) as usize)),
+             n2.mag.iter().chain(iter::repeat(&0).take(0)),
              l2)
         } else {
-            (n1.mag.iter().chain(std::iter::repeat(&0).take(0)),
-             n2.mag.iter().chain(std::iter::repeat(&0).take(0)),
+            (n1.mag.iter().chain(iter::repeat(&0).take(0)),
+             n2.mag.iter().chain(iter::repeat(&0).take(0)),
              l1)
         }
     }
 
     fn subtract(n1: &Int, n2: &Int) -> (Vec<Digit>, Digit, Digit) {
         let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
-        assert_eq!(n1_iter.clone().count(), n2_iter.clone().count());
 
         let mut borrow: Digit = 0;
         let mut sign: Digit = 0; // zero when x.mag == y.mag
         let mut mag = vec![0; len as usize];
-        // n1.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
-        n1_iter.zip(n2_iter).enumerate().for_each(|(i, (&x, &y))| {
+        for (i, (&x, &y)) in n1_iter.zip(n2_iter).enumerate() {
             let diff: Digit; // diff between each corresponding limbs of x and y
             (diff, borrow) = sbb(x, y, borrow);
             sign |= diff;
             mag[i] = diff;
-        });
+        }
         (mag, borrow, sign)
     }
 
@@ -853,9 +848,9 @@ impl Int {
                 let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
                 let (un_sub_q_mul_vn, _) = un_j_n.sub(&q_mul_vn_);
                 un.window_update(j, vnw, &un_sub_q_mul_vn);
-                assert_eq!(un.digit(j+vnw) as i64, un_sub_q_mul_vn.last_digit() as i64);
+                assert_eq!(un.digit(j + vnw) as i64, un_sub_q_mul_vn.last_digit() as i64);
             }
-            let window_last_digit: i64 = un.digit(j+vnw) as i64;
+            let window_last_digit: i64 = un.digit(j + vnw) as i64;
             //
             #[allow(unused_labels)]
             'D5: {

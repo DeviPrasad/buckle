@@ -53,7 +53,6 @@ pub enum IntStrCase {
     Upper,
 }
 
-
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct Int {
     // Declared count of bits in the magnitude.
