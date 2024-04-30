@@ -27,6 +27,7 @@ impl std::fmt::Display for Int {
     }
 }
 
+#[allow(dead_code)]
 impl Int {
     pub const BIT_WIDTH_MIN: u32 = Digit::BITS; // one digit magnitude, at the least,.
     pub const BIT_WIDTH_MAX: u32 = 512 * Digit::BITS; // 512 digits, at most.
@@ -108,6 +109,13 @@ impl Int {
     #[inline]
     fn bit_width_for(cd: u32) -> u32 {
         cd * Digit::BITS
+    }
+
+    // count of trailing (least-significant) zero bits
+    pub fn ctz(&self) -> u32 {
+        self.mag.iter()
+            .take_while(|v| (*v ^ 1u64).eq(&1u64))
+            .fold(0, |a, v| a + v.trailing_zeros())
     }
 
     pub fn new(bit_len: u32) -> Self {
@@ -818,7 +826,6 @@ impl Int {
         let mut un = dividend.expand_normalize(s);
 
         const BASE: u128 = 1 << 64;
-        const BASE_MASK: u128 = BASE - 1;
 
         let mut q: u128;
         let mut quotient = Int::from_le_digits_vec(vec![0_u64; (m - n + 1) as usize]);
@@ -944,16 +951,35 @@ impl Int {
         r
     }
 
+    // shift-left small
+    // useful while computing extended binary GCD, for example.
+    fn shls_mut(&mut self, s: u32) {
+        self.valid();
+        assert!(s < 64, "shls_mut - left shift must be less than 64.");
+        let t = self;
+        if s > 0 && s < 64 {
+            for k in (1..t.width()).rev() {
+                let i = k as usize;
+                // this easily copes with the case where c == Digit::BITS
+                // 0 < s < Digit::BITS ==> 1 <= (Digit::BITS - s) < Digit::BITS
+                t.mag[i] = (t.mag[i] << s) | (t.mag[i - 1] >> (Digit::BITS - s));
+            }
+            t.mag[0] <<= s;
+        }
+        t.set_invariants();
+        t.valid();
+    }
+
     fn shl_mut(&mut self, count: u32) {
         let t = self;
-        let cd = t.width() as usize;
+        let dc = t.width() as usize;
         let mut count = count;
         // iteratively left-shift one digit (or iow, Digit::BITS) at a time.
         while count > 0 {
             // number of bits to be left-shifted, in this iteration, from each digit.
-            let c = min(count, Digit::BITS);
-            for i in (1..cd).rev() {
-                // we need to be careful about the case where c == 64.
+            let c = min(count, Digit::BITS); // 0 < c <= Digit::BITS ==> 0 <= c-1
+            for i in (1..dc).rev() {
+                // this easily copes with the case where c == Digit::BITS
                 t.mag[i] = ((t.mag[i] << (c - 1)) << 1) | (t.mag[i - 1] >> (Digit::BITS - c));
             }
             t.mag[0] = (t.mag[0] << (c - 1)) << 1;
@@ -983,23 +1009,41 @@ impl Int {
     // count = 0 has no effect; zero mutations.
     fn shr_mut(&mut self, count: u32) {
         self.valid();
-        let s = self;
+        let t = self;
         let mut count = count;
         // iteratively right-shift one digit (or iow, Digit::BITS) at a time.
         while count > 0 {
-            let cd = s.width() as usize;
+            let dc = t.width() as usize;
             // number of bits to be right-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for k in 0..=cd as i32 - 2 { // if cd < 2, loop will not be executed
-                let i = k as usize; // keep the compiler happy!
+            for i in 0..=dc - 2 { // if cd < 2, loop will not be executed
                 // we need to be careful about the case where c == 64.
-                s.mag[i] = (s.mag[i] >> (c - 1) >> 1) | (s.mag[i + 1] << Digit::BITS - c);
+                t.mag[i] = (t.mag[i] >> (c - 1) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
             }
-            s.mag[cd - 1] = s.mag[cd - 1] >> (c - 1) >> 1;
+            t.mag[dc - 1] = t.mag[dc - 1] >> (c - 1) >> 1;
             count -= c;
         }
-        s.set_invariants();
-        s.valid();
+        t.set_invariants();
+        t.valid();
+    }
+
+    // shift-right small
+    // useful while computing extended binary GCD, for example.
+    fn shrs_mut(&mut self, s: u32) {
+        self.valid();
+        assert!(s < 64, "shrs_mut - left shift must be less than 64.");
+        let t = self;
+        let dc = t.width() as usize;
+        if s > 0 && s < 64 {
+            for i in (0..=dc - 2).rev() {
+                // this easily copes with the case where c == Digit::BITS
+                // 0 < s < Digit::BITS ==> 1 <= (Digit::BITS - s) < Digit::BITS
+                t.mag[i] = (t.mag[i] >> s) | (t.mag[i + 1] << (Digit::BITS - s));
+            }
+            t.mag[dc - 1] >>= s;
+        }
+        t.set_invariants();
+        t.valid();
     }
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {

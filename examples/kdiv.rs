@@ -14,8 +14,6 @@
     limitations under the License.
 */
 
-use buckle::bits;
-
 //
 // The following is a list of publicly available implementations:
 // https://news.ycombinator.com/item?id=26562819
@@ -102,13 +100,7 @@ pub fn le_vec_u16(s: &str) -> Vec<D16> {
 }
 
 fn d16_len(a: D16) -> u32 {
-    let mut len = 0;
-    let mut x = a as usize;
-    if x >= 1 << 8 {
-        x >>= 8;
-        len += 8;
-    }
-    return len + bits::LEN_8[x] as u32
+    16 - a.leading_zeros()
 }
 
 fn d16_nlz(x: D16) -> u32 {
@@ -266,7 +258,6 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
 #[cfg(test)]
 mod d16_k_tests {
     use buckle::init_logger;
-    use crate::{D16, d16_nlz, d16_normalize, le_vec_u16};
     use super::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
 
     #[test]
@@ -279,7 +270,7 @@ mod d16_k_tests {
         assert_eq!(o2, false);
         let (t2, o3) = t1.overflowing_sub(0xFFFF);
         assert_eq!((t2, o3), (0, false));
-        let (t2, o3) = t2.overflowing_sub(0xFFFF);
+        let (_, o3) = t2.overflowing_sub(0xFFFF);
         assert_eq!(o3, true);
 
         let (t1, o1) = 2_u16.overflowing_sub(4_u16); //  0xFFFE

@@ -159,50 +159,15 @@ pub fn div64_rem64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
 
 // count of leading zeroes.
 pub fn clz(x: Digit) -> u32 {
-    Digit::BITS - bit_width(x)
+    x.leading_zeros()
 }
 
-pub(crate) fn bit_width(a: Digit) -> u32 {
-    let mut len = 0;
-    let mut x = a as usize;
-    if x >= 1 << 32 {
-        x >>= 32;
-        len += 32;
-    }
-    if x >= 1 << 16 {
-        x >>= 16;
-        len += 16;
-    }
-    if x >= 1 << 8 {
-        x >>= 8;
-        len += 8;
-    }
-    return len + LEN_8[x] as u32
+pub(crate) fn bit_width(d: Digit) -> u32 {
+    64 - d.leading_zeros()
 }
-
-// "length" of a 8-bit value in binary representation.
-pub const LEN_8: [u8; 256] = [
-    0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4,
-    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8
-];
 
 #[cfg(test)]
 mod bits_test {
-
     use crate::bits::div64_rem64;
 
     fn init() {
