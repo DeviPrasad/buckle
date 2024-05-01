@@ -1,5 +1,5 @@
 /*
-    Copyright 2024 M. Devi Prasad
+    Copyright 2024 M. Devi Prasad (dp@web3pleb.org)
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -49,15 +49,28 @@ impl Int {
     //      in the divisor and the value BURNIKEL_ZIEGLER_DIV_OFFSET.
     pub const BURNIKEL_ZIEGLER_DIV_OFFSET: u32 = 40;
 
-    fn sign_of(s: i32) -> i32 {
+    pub fn sign_of(s: i32) -> i32 {
         match s {
             0..=i32::MAX => 1,
             _ => {
-                #[cfg(any(debug_assertions, release_test))]
-                assert!(false, "No implementation for negative Ints");
                 -1
             }
         }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.valid();
+        self.sign == 0
+    }
+
+    pub fn negative(&self) -> bool {
+        self.valid();
+        self.sign < 0
+    }
+
+    pub fn positive(&self) -> bool {
+        self.valid();
+        self.sign > 0
     }
 
     #[inline]
@@ -67,21 +80,21 @@ impl Int {
     }
 
     #[inline]
-    fn valid(&self) {
+    pub fn valid(&self) {
         #[cfg(any(debug_assertions, release_test))]
         {
-            let (pos_lnzd, pos_lnzb) = Int::pos_lnzd_lnzb(self.cb, &self.mag);
+            let (pos_lnzd, pos_lnzb) = self.lnzd_lnzb();
             assert!(self.cb >= Int::BIT_WIDTH_MIN && self.cb <= Int::BIT_WIDTH_MAX,
                     "Int::check_invariant - bad bit length");
             assert_eq!(self.mag.len() as u32, Int::width_of(self.cb), "Int::check_invariant - announced Int size does not match with the magnitude");
             assert!(self.sign == 0 || self.sign == 1 || self.sign == -1, "Int::check_invariant - invalid sign");
-            assert!((self.sign == 0 && (self.pos_lnzd == -1 && self.pos_lnzb == -1)) ||
+            assert!((self.sign == 0 && (pos_lnzd == -1 && pos_lnzb == -1)) ||
                         (self.sign != 0
-                            && (self.pos_lnzb >= 0 && self.pos_lnzb < 64)
-                            && (self.pos_lnzd >= 0 && self.pos_lnzd <= self.mag.len() as i32 - 1)),
+                            && (pos_lnzb >= 0 && pos_lnzb < 64)
+                            && (pos_lnzd >= 0 && pos_lnzd <= self.mag.len() as i32 - 1)),
                     "Int::check_invariant - invalid sign, lnzd, or lnzb values");
-            assert_eq!(pos_lnzd, self.pos_lnzd, "Int::check_invariant - bad pos_lnzd value");
-            assert_eq!(pos_lnzb, self.pos_lnzb, "Int::check_invariant - bad pos_lnzb value");
+            assert_eq!(pos_lnzd, pos_lnzd, "Int::check_invariant - bad pos_lnzd value");
+            assert_eq!(pos_lnzb, pos_lnzb, "Int::check_invariant - bad pos_lnzb value");
         }
     }
 
@@ -113,75 +126,69 @@ impl Int {
 
     // count of trailing (least-significant) zero bits
     pub fn ctz(&self) -> u32 {
-        self.mag.iter()
-            .take_while(|v| (*v ^ 1u64).eq(&1u64))
-            .fold(0, |a, v| a + v.trailing_zeros())
+        let mut c = 0u32;
+        for d in self.mag.iter() {
+            c += d.trailing_zeros();
+            if *d > 0 {
+                break;
+            }
+        }
+        c
     }
 
     pub fn new(bit_len: u32) -> Self {
         Int::check_len(bit_len);
         let bit_len = min(max(bit_len, Int::BIT_WIDTH_MIN), Int::BIT_WIDTH_MAX);
         let digits = vec![0; Int::width_of(bit_len) as usize];
-        let (pos_lnzd, pos_lnzb) = Self::pos_lnzd_lnzb(bit_len, &digits);
+        //let (pos_lnzd, pos_lnzb) = Self::pos_lnzd_lnzb(bit_len, &digits);
         let n = Int {
             cb: bit_len,
             sign: 0,
             mag: digits,
-            pos_lnzd,
-            pos_lnzb,
         };
         n.valid();
         n
     }
 
     fn set_invariants(&mut self) {
-        let (pos_lnzd, pos_lnzb) = Self::pos_lnzd_lnzb(self.cb, &self.mag);
-        self.pos_lnzd = pos_lnzd;
-        self.pos_lnzb = pos_lnzb;
+        let (pos_lnzd, pos_lnzb) = self.lnzd_lnzb();
         if pos_lnzd == -1 {
             assert_eq!(pos_lnzb, -1);
             self.sign = 0;
         } else {
-            self.sign = Self::sign_of(1);
+            self.sign = Self::sign_of(self.sign);
         }
         self.valid();
     }
 
     // count of leading zeroes in this Int
     pub fn clz(&self) -> u32 {
-        if self.pos_lnzd < 0 {
-            0
-        } else {
-            self.width() * Digit::BITS -
-                // recall lnzb is zero-based index of the leading set-bit; so we add 1 to it.
-                (Self::bit_width_for(self.pos_lnzd as u32) + self.pos_lnzb as u32 + 1)
+        let mut c = 0u32;
+        for d in self.mag.iter().rev() {
+            c += d.leading_zeros();
+            if *d > 0 {
+                break;
+            }
         }
+        c
+    }
+
+    pub fn lnzd(&self) -> i32 {
+        for (i, d) in self.mag.iter().rev().enumerate() {
+            if *d > 0 {
+                return (self.width() - (i as u32 + 1)) as i32
+            }
+        }
+        -1
     }
 
     // Find the index of the leading non-zero digit in the magnitude.
     // Determine the index of the leading non-zero bit within this digit.
-    fn pos_lnzd_lnzb(bit_len: u32, mag: &Vec<Digit>) -> (i32, i32) {
-        Int::check_len(bit_len);
-        // create a mask of N trailing 1's.
-        let cb_used_in_leading_digit: u64 = (bit_len & (Digit::BITS - 1)) as u64; // mod 64
-        let mask = match cb_used_in_leading_digit {
-            0 => Digit::MAX,
-            _ => (1 << cb_used_in_leading_digit) - 1
-        };
-
-        // The most-significant/leading digit may use less than 64-bits (full-width of the Digit).
-        // The leading digit should be masked appropriately to ignore the unused leading bits, and
-        // to select only the right-sized suffix bits (LSBs).
-        let mut rit = mag.iter().rev(); // start at the most-leading digit.
-        if let Some(&ld) = rit.next() { // pick only the leading digit.
-            if ld & mask > 0 { // if the used bits contribute a value, return the indices.
-                return ((mag.len() - 1) as i32, (bit_width(ld) - 1) as i32)
-            }
-        }
-        // The leading digit is zero. So we walk the others digits (from MSB to LSB).
-        for (i, &d) in rit.enumerate() {
-            if d > 0 { // check the full width of the digit
-                return ((mag.len() - i - 2) as i32, (bit_width(d) - 1) as i32)
+    fn lnzd_lnzb(&self) -> (i32, i32) {
+        for (i, d) in self.mag.iter().rev().enumerate() {
+            if *d > 0 {
+                return ((self.mag.len() - (i + 1)) as i32,
+                        (Digit::BITS - (d.leading_zeros() + 1)) as i32)
             }
         }
         // Every digit is a zero in this Int.
@@ -195,8 +202,6 @@ impl Int {
         let mut res = Int {
             cb,
             sign: 1,
-            pos_lnzd: -1,
-            pos_lnzb: -1,
             mag: digits,
         };
         if bit_len != cb {
@@ -204,7 +209,6 @@ impl Int {
             res.cb = bit_len;
         }
         res.set_invariants();
-        res.valid();
         res
     }
 
@@ -214,12 +218,9 @@ impl Int {
         let mut res = Int {
             cb: Self::bit_width_for(digits.len() as u32),
             sign: 1,
-            pos_lnzd: -1,
-            pos_lnzb: -1,
             mag: digits,
         };
         res.set_invariants();
-        res.valid();
         res
     }
 
@@ -227,7 +228,6 @@ impl Int {
         self.cb = digits_len * Digit::BITS;
         self.mag.resize(digits_len as usize, 0);
         self.set_invariants();
-        self.valid();
     }
 
     // mint a new Int whose width is more-or-less-or-same as self.
@@ -245,7 +245,6 @@ impl Int {
                 *dst = *src;
             }
             let larger_nat = Int::from_parts(new_len, lm);
-            larger_nat.valid();
             larger_nat
         } else {
             // shrink the size of the magnitude
@@ -253,7 +252,6 @@ impl Int {
             // 'copy_from_slice' panics if the source and destination lengths are not equal
             sm.copy_from_slice(&self.mag[0..new_size]);
             let smaller_nat = Int::from_parts(new_len, sm);
-            smaller_nat.valid();
             smaller_nat
         }
     }
@@ -269,9 +267,8 @@ impl Int {
             self.cb = nbw;
             self.mag.resize(new_width, 0);
             self.set_invariants();
-            self.valid();
             true
-        } else { //if self.cb < nbw {
+        } else {
             false
         }
     }
@@ -280,11 +277,10 @@ impl Int {
         let mut res = Self::new(bit_len);
         res.mag[0] = val;
         res.set_invariants();
-        res.valid();
         res
     }
 
-    pub fn digit_value(&self) -> (bool, Digit) {
+    pub fn one_digit(&self) -> (bool, Digit) {
         self.valid();
         if self.mag[0] > 0 && // the least-significant digit is non-zero, and
             // either it is a single digit int or the rest of the digits are all zeros
@@ -303,11 +299,6 @@ impl Int {
         Self::new_digit(bit_len, 1)
     }
 
-    pub fn is_zero(&self) -> bool {
-        self.valid();
-        self.sign == 0
-    }
-
     pub fn is_one(&self) -> bool {
         self.valid();
         let mut r = self.mag[0] == 1;
@@ -317,8 +308,14 @@ impl Int {
         r
     }
 
+    // check if the least significant bit of the magnitude is zero.
+    pub fn even(&self) -> bool {
+        self.valid();
+        self.sign != 0 && (self.mag[0] & 1) == 0
+    }
+
     pub fn is_compact(&self) -> bool {
-        self.pos_lnzd >= 0 && self.pos_lnzd as u32 == self.width() - 1
+        self.last_digit() > 0
     }
 
     pub fn compact(&self) -> Int {
@@ -329,9 +326,11 @@ impl Int {
 
     pub fn compact_mut(&mut self) {
         self.valid();
-        let len = match self.is_zero() {
-            true => 1usize, // need at least one digit to store the zero value
-            _ => (self.pos_lnzd + 1) as usize
+        let len = self.lnzd(); // lnzd is zero-indexed value
+        let len: usize = if len < 0 { // a zero value needs at least one digit, after all
+            1
+        } else {
+            len as usize + 1
         };
         self.mag.truncate(len);
         self.cb = Self::bit_width_for(len as u32);
@@ -368,11 +367,6 @@ impl Int {
         self.mag[(self.width() - 1) as usize]
     }
 
-    pub fn digit128(&self, i: u32) -> u128 {
-        assert!(i < self.width(), "Int::digit - invalid index {i} >= {}", self.width());
-        self.mag[i as usize] as u128
-    }
-
     pub fn dec(&mut self, i: u32) {
         self.digit_update(i, self.digit(i) - 1);
     }
@@ -381,28 +375,21 @@ impl Int {
         assert!(i < self.width(), "Int::update - invalid index {i} >= {}", self.width());
         self.mag[i as usize] = rval;
         self.set_invariants();
-        self.valid();
     }
 
     // returns (count_of_one_bits, most_significant_set_bit)
     pub fn count_ones(&self) -> (u32, u32) {
         let mut c = 0;
-        let mut mssb = 0;
-        let mut bit = 0;
         for &d in self.mag.iter() {
             c += d.count_ones();
-            let mut n = d;
-            for _ in 0..64 {
-                if (n & 1) == 1 {
-                    mssb = bit;
-                }
-                n = n >> 1;
-                bit += 1;
-            }
-            assert_eq!(bit % 64, 0);
         }
-        assert!((c == 0 && mssb == 0) || c > 0);
-        (c, mssb)
+        let (d, b) = self.lnzd_lnzb();
+        assert!((c == 0 && d == -1 && b == -1) || (c > 0 && d >= 0 && b >= 0));
+        if d == -1 && b == -1 {
+            (c, 0)
+        } else {
+            (c, (d*64 + b) as u32)
+        }
     }
 
     pub fn pow2(&self) -> bool {
@@ -434,16 +421,27 @@ impl Int {
     }
 
     pub fn compare<'a>(&'a self, t: &'a Int) -> (/* larger */&Int, /* smaller */&Int, /* sign */i32) {
-        if self.pos_lnzd > t.pos_lnzd {
+        let (pos_lnzd, pos_lnzb) = self.lnzd_lnzb();
+        let (t_pos_lnzd, t_pos_lnzb) = t.lnzd_lnzb();
+        if pos_lnzd > t_pos_lnzd {
             (self, t, 1)
-        } else if self.pos_lnzd < t.pos_lnzd {
+        } else if pos_lnzd < t_pos_lnzd {
             (t, self, -1)
         } else {
-            if self.pos_lnzb > t.pos_lnzb {
+            if pos_lnzb > t_pos_lnzb {
                 (self, t, 1)
-            } else if self.pos_lnzb < t.pos_lnzb {
+            } else if pos_lnzb < t_pos_lnzb {
                 (t, self, -1)
             } else {
+                // when the leading positions are all same, scan from the most-significant digit.
+                for k in (0..=pos_lnzd).rev() {
+                    let i = k as usize;
+                    if self.mag[i] < t.mag[i] {
+                        return (t, self, -1)
+                    } else if self.mag[i] > t.mag[i] {
+                        return (self, t, 1)
+                    }
+                }
                 (self, t, 0)
             }
         }
@@ -454,7 +452,18 @@ impl Int {
         self.compare(&n2).2 == 0
     }
 
+    fn ne(&self, n2: &Self) -> bool {
+        self.valid();
+        assert!(false);
+        self.compare(&n2).2 != 0
+    }
+
     fn lt(&self, n2: &Self) -> bool {
+        self.valid();
+        self.compare(&n2).2 < 0
+    }
+
+    pub fn less(&self, n2: &Self) -> bool {
         self.valid();
         self.compare(&n2).2 < 0
     }
@@ -474,11 +483,8 @@ impl Int {
         self.compare(&n2).2 >= 0
     }
 
-    pub fn add(&self, n2: &Int) -> (Int, Digit) {
-        self.valid();
-        n2.valid();
-
-        let (n1_iter, n2_iter, len) = Self::width_equalizer(&self, &n2);
+    fn do_add(n1: &Int, n2: &Int) -> (Int, Digit) {
+        let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
 
         let mut carry: Digit = 0;
         let mut mag = vec![0; len as usize];
@@ -488,6 +494,33 @@ impl Int {
         let res = Int::from_le_digits_vec(mag);
         res.valid();
         (res, carry)
+    }
+
+    pub fn add(&self, n2: &Int) -> (Int, Digit) {
+        self.valid();
+        n2.valid();
+
+        let (s1, s2) = (self.negative(), n2.negative());
+        if (s1, s2) == (false, false) || (s1, s2) == (true, true) {
+            let (mut sum, c) = Self::do_add(self, n2);
+            sum.sign = self.sign;
+            sum.set_invariants();
+            sum.valid();
+            (sum, c)
+        } else {
+            // one of n1 an dn2 is negative
+            let (pos, neg) = if !s1 { // n1 is positive
+                (self, n2)
+            } else { // n2 is positive
+                (n2, self)
+            };
+            let (mag, borrow, _) = Self::do_sub(&pos, &neg);
+            let mut res = Int::from_le_digits_vec(mag);
+            res.sign = (-(borrow as i64)) as i32;
+            res.set_invariants();
+            res.valid();
+            (res, borrow)
+        }
     }
 
     pub fn sum(&self, n2: &Int) -> Int {
@@ -513,7 +546,7 @@ impl Int {
         }
     }
 
-    fn subtract(n1: &Int, n2: &Int) -> (Vec<Digit>, Digit, Digit) {
+    fn do_sub(n1: &Int, n2: &Int) -> (Vec<Digit>, /* borrow*/ Digit, /* sign */Digit) {
         let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
 
         let mut borrow: Digit = 0;
@@ -528,17 +561,48 @@ impl Int {
         (mag, borrow, sign)
     }
 
-    pub fn sub(&self, n2: &Int) -> (Int, i32) {
+    /*pub fn _sub_(&self, n2: &Int) -> (Int, i32) {
         self.valid();
         n2.valid();
 
-        let (mag, borrow, sign) = Self::subtract(self, n2);
+        let (mag, borrow, sign) = Self::do_sub(self, n2);
         let d: i64 = match sign {
             0 => 0,
             _ => 1
         };
         let res = Int::from_le_digits_vec(mag);
         (res, ((-(borrow as i64)) | d) as i32)
+    }*/
+
+    pub fn sub(&self, n2: &Int) -> (Int, i32) {
+        self.valid();
+        n2.valid();
+
+        let (s1, s2) = (self.negative(), n2.negative());
+        if (s1, s2) == (false, true) || (s1, s2) == (true, false) {
+            let (mut sum, c) = Self::do_add(self, n2);
+            sum.sign = 1;
+            sum.set_invariants();
+            sum.valid();
+            (sum, c as i32)
+        } else {
+            // both operands are either positive or negative
+            let (n1, n2) = if !s1 { // n1 is positive
+                (self, n2)
+            } else {
+                (n2, self)
+            };
+            let (mag, borrow, sign) = Self::do_sub(&n1, &n2);
+            let d: i64 = match sign {
+                0 => 0,
+                _ => 1
+            };
+            let mut res = Int::from_le_digits_vec(mag);
+            res.sign = -(borrow as i32);
+            res.set_invariants();
+            res.valid();
+            (res, ((-(borrow as i64)) | d) as i32)
+        }
     }
 
     // subtract two magnitudes. Indicate the sign too.
@@ -547,7 +611,7 @@ impl Int {
         n2.valid();
 
         let (n1, n2, sign) = self.compare(&n2);
-        let (mag, _, _) = Self::subtract(n1, n2);
+        let (mag, _, _) = Self::do_sub(n1, n2);
         let res = Int::from_le_digits_vec(mag);
         (res, sign)
     }
@@ -570,14 +634,19 @@ impl Int {
     }
 
     // school-book multiplication
-    // TODO: optimize when at least one of the arguments is 2^N
+// TODO: optimize when at least one of the arguments is 2^N
     pub fn mul(&self, n2: &Int) -> Int {
-        Self::multiply_base_case(&self, n2)
+        let mut prod = Self::multiply_base_case(&self, n2);
+        prod.sign = self.sign * n2.sign;
+        prod.set_invariants();
+        prod
     }
 
     pub fn mul_karatsuba(&self, n2: &Int) -> Int {
         let mut prod = Self::multiply_karatsuba(&self, n2);
         prod.truncate(self.width() + n2.width());
+        prod.sign = self.sign * n2.sign;
+        prod.set_invariants();
         prod
     }
 
@@ -605,8 +674,8 @@ impl Int {
     }
 
     // Used in Karatsuba multiplication.
-    // Split the digits into two blocks, so at best, each of 'blk_len' (or less) size
-    // returns (lower_digits, upper_digits)
+// Split the digits into two blocks, so at best, each of 'blk_len' (or less) size
+// returns (lower_digits, upper_digits)
     fn split_digits(&self, num_digits: u32) -> (Int, Int) {
         let self_len = self.width();
         let cb = num_digits * Digit::BITS; // count of bits required
@@ -722,7 +791,7 @@ impl Int {
                 (Int::one(Digit::BITS), Int::zero(Digit::BITS))
             } else if co < 0 { // dividend < divisor
                 (Int::zero(Digit::BITS), dividend.compact())
-            } else if let (true, digit) = divisor.digit_value() {
+            } else if let (true, digit) = divisor.one_digit() {
                 dividend.divide_by_digit(digit)
             } else {
                 let m = dividend.width(); // count of digits in the dividend
@@ -778,11 +847,10 @@ impl Int {
     }
 
     // pushes all leading zeroes out.
-    // pre-condition: magnitude > 0
-    // post-condition: res.digits_len() = self.digits_len() + (expand as u32)
+// pre-condition: magnitude > 0
+// post-condition: res.digits_len() = self.digits_len() + (expand as u32)
     fn expand_normalize(&self, s: u32) -> Int {
         self.valid();
-        assert!(self.pos_lnzb >= 0 && self.pos_lnzb >= 0);
 
         let m = self.width();
         let mut wn = vec![0; (m + 1) as usize];
@@ -795,7 +863,6 @@ impl Int {
 
     fn normalize(&self, s: u32) -> Int {
         self.valid();
-        assert!(self.pos_lnzb >= 0 && self.pos_lnzb >= 0);
 
         let m = self.width();
         let wn = vec![0; m as usize];
@@ -803,8 +870,8 @@ impl Int {
     }
 
     // pre-conditions:
-    // divisor is compact. divisor.digits_len() > 1, dividend.digits_len() >= divisor.digits_len()
-    //
+// divisor is compact. divisor.digits_len() > 1, dividend.digits_len() >= divisor.digits_len()
+//
     pub fn div_knuth(&self, divisor: &Int) -> (/* quotient */Int, /* remainder */Int) {
         let dividend: &Int = self;
         dividend.valid();
@@ -820,8 +887,6 @@ impl Int {
 
         let vn = divisor.normalize(s);
         let vnw = vn.width(); // the number of digits in vn
-        // normalize the divider by stripping away leading zeroes.
-        assert_eq!(vn.mag[vn.pos_lnzd as usize] & (1 << 63), 1 << 63);
 
         let mut un = dividend.expand_normalize(s);
 
@@ -942,7 +1007,7 @@ impl Int {
         self.clone().set_bit_mut(pos)
     }
 
-    fn shl(&self, count: u32) -> Int {
+    pub(crate) fn shl(&self, count: u32) -> Int {
         self.valid();
         #[cfg(any(debug_assertions, release_test))]
         assert!(count <= self.bit_width(), "shl {count} > {}", self.bit_width());
@@ -952,7 +1017,7 @@ impl Int {
     }
 
     // shift-left small
-    // useful while computing extended binary GCD, for example.
+// useful while computing extended binary GCD, for example.
     fn shls_mut(&mut self, s: u32) {
         self.valid();
         assert!(s < 64, "shls_mut - left shift must be less than 64.");
@@ -997,7 +1062,7 @@ impl Int {
     }
 
     // 0 <= count <= self.bit_len()
-    fn shr(&self, count: u32) -> Int {
+    pub fn shr(&self, count: u32) -> Int {
         self.valid();
         #[cfg(any(debug_assertions, release_test))]
         assert!(count <= self.bit_width(), "shr {count} > {}", self.bit_width());
@@ -1007,7 +1072,7 @@ impl Int {
     }
 
     // count = 0 has no effect; zero mutations.
-    fn shr_mut(&mut self, count: u32) {
+    pub fn shr_mut(&mut self, count: u32) {
         self.valid();
         let t = self;
         let mut count = count;
@@ -1016,7 +1081,8 @@ impl Int {
             let dc = t.width() as usize;
             // number of bits to be right-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for i in 0..=dc - 2 { // if cd < 2, loop will not be executed
+            for k in 0..=dc as isize - 2 { // if cd < 2, loop will not be executed
+                let i = k as usize;
                 // we need to be careful about the case where c == 64.
                 t.mag[i] = (t.mag[i] >> (c - 1) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
             }
@@ -1028,14 +1094,15 @@ impl Int {
     }
 
     // shift-right small
-    // useful while computing extended binary GCD, for example.
-    fn shrs_mut(&mut self, s: u32) {
+// useful while computing extended binary GCD, for example.
+    pub fn shrs_mut(&mut self, s: u32) {
         self.valid();
         assert!(s < 64, "shrs_mut - left shift must be less than 64.");
         let t = self;
         let dc = t.width() as usize;
         if s > 0 && s < 64 {
-            for i in (0..=dc - 2).rev() {
+            for k in (0..=dc as i32 - 2).rev() {
+                let i = k as usize;
                 // this easily copes with the case where c == Digit::BITS
                 // 0 < s < Digit::BITS ==> 1 <= (Digit::BITS - s) < Digit::BITS
                 t.mag[i] = (t.mag[i] >> s) | (t.mag[i + 1] << (Digit::BITS - s));
@@ -1321,10 +1388,11 @@ mod int_test {
     fn int1k_create() {
         init();
         let n1024 = Int::new(1024);
+        let (pos_lnzd, pos_lnzb) = n1024.lnzd_lnzb();
         assert_eq!(n1024.bit_width(), 1024);
         assert_eq!(n1024.sign, 0);
-        assert_eq!(n1024.pos_lnzd, -1);
-        assert_eq!(n1024.pos_lnzb, -1);
+        assert_eq!(pos_lnzd, -1);
+        assert_eq!(pos_lnzb, -1);
         let n256 = n1024.resize(256);
         assert_eq!(n256.bit_width(), 256);
         let n4096 = n256.resize(4096);
@@ -1343,16 +1411,18 @@ mod int_test {
         let n96_y = Int::new_digit(96, 0x00EE000011110000);
         let n96_zero = Int::zero(96);
         {
+            let (pos_lnzd, pos_lnzb) = n96_x.lnzd_lnzb();
             assert_eq!(n96_x.bit_width(), 96);
             assert_eq!(n96_x.sign, 1);
-            assert_eq!(n96_x.pos_lnzd, 0);
-            assert_eq!(n96_x.pos_lnzb, 63);
+            assert_eq!(pos_lnzd, 0);
+            assert_eq!(pos_lnzb, 63);
         }
         {
+            let (pos_lnzd, pos_lnzb) = n96_y.lnzd_lnzb();
             assert_eq!(n96_y.bit_width(), 96);
             assert_eq!(n96_y.sign, 1);
-            assert_eq!(n96_y.pos_lnzd, 0);
-            assert_eq!(n96_y.pos_lnzb, 55);
+            assert_eq!(pos_lnzd, 0);
+            assert_eq!(pos_lnzb, 55);
         }
         {
             assert_eq!(Int::xor(&n96_x, &n96_x), n96_zero);

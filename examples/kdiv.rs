@@ -249,11 +249,11 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
 }
 /*
  * Simple test mode:
-    RUSTFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused"
-        RUSTDOCFLAGS="--cfg=release_test  -Adead_code -Aunused" cargo test -- --show-output
+    RUSTFLAGS="--cfg=release_test --cfg=noob"
+        RUSTDOCFLAGS="--cfg=release_test" cargo test --example kdiv -- --show-output
  * and, for 'release' mode testing:
-    RUSTFLAGS="--cfg=release_test --cfg=noob -Adead_code -Aunused"
-        RUSTDOCFLAGS="--cfg=release_test  -Adead_code -Aunused" cargo test --release -- --show-output
+    RUSTFLAGS="--cfg=release_test --cfg=noob"
+        RUSTDOCFLAGS="--cfg=release_test" cargo test --example kdiv --release -- --show-output
 */
 #[cfg(test)]
 mod d16_k_tests {
