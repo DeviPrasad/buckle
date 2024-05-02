@@ -4,11 +4,11 @@ impl Int {
     // extended binary GCD algorithm
     pub fn gcd(a: &Int, b: &Int) -> (/* gcd */Int, /* s */Int, /* t */ Int) {
         let (mut x, mut y) = (a.compact(), b.compact());
-        let mut sr = 0;
+        let mut sr: u64 = 1;
         while x.even() && y.even() {
             x.shr_mut(1);
             y.shr_mut(1);
-            sr += 1;
+            sr *= 2;
         }
         let alpha = x.clone();
         let beta = y.clone();
@@ -53,14 +53,14 @@ impl Int {
                     t = t.sub(&alpha).0;
                     t.shr_mut(1);
                 }
-            } else if y.less(&x) {
+            } else if y.lt(&x) {
                 (x, y, u, v, s, t) = (y, x, s, t, u, v)
             } else {
                 (y, s, t) = (y.sub(&x).0, s.sub(&u).0, t.sub(&v).0)
             }
         }
         let mf = Int::new_digit(x.bit_width(), 1);
-        let gcd = mf.shl(sr).mul(&x).compact();
+        let gcd = mf.mul_digit(sr).mul(&x).compact();
 
         (gcd, s, t)
     }
@@ -80,7 +80,7 @@ mod gcd_tests {
 
         let x = Int::new_digit(Digit::BITS, 383);
         let y = Int::new_digit(Digit::BITS, 271);
-        let (gcd, _s, _t) = Int::gcd(&x, &y);
+        let (gcd, _, _) = Int::gcd(&x, &y);
         assert_eq!(gcd.mag, vec![1]);
 
         let x = Int::new_digit(Digit::BITS, 21);
@@ -90,18 +90,18 @@ mod gcd_tests {
 
         let x = Int::new_digit(Digit::BITS, 19932);
         let y = Int::new_digit(Digit::BITS, 468);
-        let (gcd, s, t) = Int::gcd(&x, &y);
+        let (gcd, _s, _t) = Int::gcd(&x, &y);
         assert_eq!(gcd.mag, vec![12]);
-        // assert_eq!(gcd.mag, x.mul(&s).sub(&y.mul(&t)).0.mag);
+        //assert_eq!(gcd.mag, x.mul(&_s).add(&y.mul(&_t)).0.mag);
 
         let x = Int::from_le_digits_vec(hex::le_vec_u64("0x1bddff867272a9296ac493c251d7f46f09a5591fe"));
         let y = Int::from_le_digits_vec(hex::le_vec_u64("0xb55930a2a68a916450a7de006031068c5ddb0e5c"));
-        let (gcd, s, t) = Int::gcd(&x, &y);
+        let (gcd, _s, _t) = Int::gcd(&x, &y);
         assert_eq!(gcd.mag, vec![2]);
 
         let x = Int::from_le_digits_vec(hex::le_vec_u64("0x2f0ece5b1ee9c15e132a01d55768dc13"));
         let y = Int::from_le_digits_vec(hex::le_vec_u64("0x1c6f4fd9873cdb24466e6d03e1cc66e7"));
-        let (gcd, s, t) = Int::gcd(&x, &y);
+        let (gcd, _s, _t) = Int::gcd(&x, &y);
         assert_eq!(gcd.mag, vec![1]);
     }
 }

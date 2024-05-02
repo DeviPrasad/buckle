@@ -14,16 +14,37 @@
     limitations under the License.
 */
 
-use std::cmp::{max, min};
+use std::cmp::{max, min, Ordering};
 use std::fmt::Formatter;
 use std::iter;
 
 use crate::{Digit, Int, IntStrCase, IntStrPadding, U128};
-use crate::bits::{adc, add128_64, bit_width, mul128, mul128_64, mul64, sbb};
+use crate::bits::{adc, add128_64, mul128, mul128_64, mul64, sbb};
 
 impl std::fmt::Display for Int {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "bits:{:};digits:{:};sign:{:+};mag_hex:{:X?}", self.bit_width(), self.width(), self.sign, self.mag)
+    }
+}
+
+impl PartialEq<Self> for Int {
+    fn eq(&self, n2: &Self) -> bool {
+        self.valid();
+        n2.valid();
+        self.compare(&n2).2 == 0
+    }
+}
+
+impl PartialOrd for Int {
+    fn partial_cmp(&self, n2: &Self) -> Option<Ordering> {
+        self.valid();
+        n2.valid();
+        let (_g, _l, ord) = self.compare(&n2);
+        match ord {
+            0 => Some(Ordering::Equal),
+            1 => Some(Ordering::Greater),
+            _ => Some(Ordering::Less)
+        }
     }
 }
 
@@ -186,12 +207,12 @@ impl Int {
     // Determine the index of the leading non-zero bit within this digit.
     fn lnzd_lnzb(&self) -> (i32, i32) {
         for (i, d) in self.mag.iter().rev().enumerate() {
-            if *d > 0 {
+            if *d > 0 { // 0 <= i < self.width(); 0 < d.leading_zeros() < Digit::BITS
                 return ((self.mag.len() - (i + 1)) as i32,
                         (Digit::BITS - (d.leading_zeros() + 1)) as i32)
             }
         }
-        // Every digit is a zero in this Int.
+        // all digits are zeroes
         (-1, -1)
     }
 
@@ -388,7 +409,7 @@ impl Int {
         if d == -1 && b == -1 {
             (c, 0)
         } else {
-            (c, (d*64 + b) as u32)
+            (c, (d * 64 + b) as u32)
         }
     }
 
@@ -445,42 +466,6 @@ impl Int {
                 (self, t, 0)
             }
         }
-    }
-
-    fn eq(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 == 0
-    }
-
-    fn ne(&self, n2: &Self) -> bool {
-        self.valid();
-        assert!(false);
-        self.compare(&n2).2 != 0
-    }
-
-    fn lt(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 < 0
-    }
-
-    pub fn less(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 < 0
-    }
-
-    fn le(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 <= 0
-    }
-
-    fn gt(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 > 0
-    }
-
-    fn ge(&self, n2: &Self) -> bool {
-        self.valid();
-        self.compare(&n2).2 >= 0
     }
 
     fn do_add(n1: &Int, n2: &Int) -> (Int, Digit) {
@@ -560,19 +545,6 @@ impl Int {
         }
         (mag, borrow, sign)
     }
-
-    /*pub fn _sub_(&self, n2: &Int) -> (Int, i32) {
-        self.valid();
-        n2.valid();
-
-        let (mag, borrow, sign) = Self::do_sub(self, n2);
-        let d: i64 = match sign {
-            0 => 0,
-            _ => 1
-        };
-        let res = Int::from_le_digits_vec(mag);
-        (res, ((-(borrow as i64)) | d) as i32)
-    }*/
 
     pub fn sub(&self, n2: &Int) -> (Int, i32) {
         self.valid();

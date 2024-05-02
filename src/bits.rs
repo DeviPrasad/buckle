@@ -162,10 +162,6 @@ pub fn clz(x: Digit) -> u32 {
     x.leading_zeros()
 }
 
-pub(crate) fn bit_width(d: Digit) -> u32 {
-    64 - d.leading_zeros()
-}
-
 #[cfg(test)]
 mod bits_test {
     use crate::bits::div64_rem64;

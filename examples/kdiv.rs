@@ -25,227 +25,228 @@
 // A commentary
 // https://skanthak.hier-im-netz.de/division.html
 
-type D16 = u16;
+#[allow(dead_code)]
+mod kd16 {
+    pub(crate) type D16 = u16;
 
-// obtains the u64 value of the hex str 's'
+    // obtains the u64 value of the hex str 's'
 // pre-conditions:
 // 's' must be a str of at most 16 hex chars; it cannot be empty.
 // panics on bad input.
-pub fn to_u16(s: &[u8]) -> D16 {
-    assert!(s.len() > 0 && s.len() <= 4);
-    let mut n: u16 = 0;
-    let mut k: u16 = 0;
-    for &hd in s.iter().rev() {
-        match buckle::hex::val(hd) {
-            Ok(v) => {
-                // log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", 1u32 << k*4);
-                n += v as u16 * (1_u16 << k * 4);
-                k += 1;
-            }
-            Err(c) => panic!("bad hex char {}", c)
-        }
-    }
-    n
-}
-
-// creates a 'big-endian' vector of u64 values.
-// may prefix the given hex str with adequate number of zeroes so the length is a multiple of 16.
-pub fn vec_u16(s: &str) -> Vec<D16> {
-    if !(&s[0..2] == "0x") {
-        panic!("hex string must start with '0x'; found {:#?}", s[0..2].to_ascii_lowercase());
-    }
-
-    let maybe_prefix_zeros = |s: &str| -> Vec<u8> {
-        let n = s.len() % 4;
-        let mut lzs: Vec<u8> = if n > 0 {
-            [b'0'].repeat(4 - n)
-        } else {
-            [].into()
-        };
-        lzs.extend_from_slice(s.as_bytes());
-        lzs
-    };
-
-    let vu16: Vec<D16> =
-        maybe_prefix_zeros(&s[2..])
-            .chunks(4)
-            .map(|hc| to_u16(hc))
-            .collect();
-
-    // #[cfg(noob)]
-    if cfg!(noob)
-    {
-        // c-like iteration for storing numbers
-        let mut be_vec = vec![0u16; 0];
-        let be_hs = maybe_prefix_zeros(&s[2..]);
-        for hc in be_hs.chunks(4) {
-            be_vec.push(to_u16(hc))
-        }
-        let len = be_hs.len() / 4 +
-            match be_hs.len() % 4 {
-                0 => 0,
-                _ => 1
-            };
-        log::info!("noob - vec_u16: {s}");
-        assert_eq!(be_vec.len(), len);
-        assert_eq!(vu16, be_vec);
-    }
-    vu16
-}
-
-pub fn le_vec_u16(s: &str) -> Vec<D16> {
-    let mut v = vec_u16(s);
-    v.reverse();
-    v
-}
-
-fn d16_len(a: D16) -> u32 {
-    16 - a.leading_zeros()
-}
-
-fn d16_nlz(x: D16) -> u32 {
-    D16::BITS - d16_len(x)
-}
-
-fn _shr16_(x: D16, s: u16) -> u16 {
-    (x >> (-(s as i16) & 15)) & ((-(s as i16) >> 15) as D16)
-}
-
-fn d16_normalize(w: &Vec<D16>, s: u32, expand: bool) -> Vec<D16> {
-    let mut wn = vec![0; w.len() + expand as usize];
-    let m = w.len();
-    if expand {
-        if s > 0 {
-            wn[m] = w[m - 1] >> (D16::BITS - s);
-        }
-    }
-    for i in (1..m).rev() {
-        if s > 0 {
-            wn[i] = (w[i] << s) | (w[i - 1] >> (D16::BITS - s));
-        } else {
-            wn[i] = w[i];
-        }
-    }
-    wn[0] = w[0] << s;
-    wn
-}
-
-pub fn _add32_(x: u32, y: u32) -> u32 {
-    x.overflowing_add(y).0
-}
-
-pub fn _add32_16(x: u32, y: u16) -> u32 {
-    x.overflowing_add(y as u32).0
-}
-
-pub fn _add16_(x: u16, y: u16) -> u16 {
-    x.overflowing_add(y).0
-}
-
-fn _mul32_16(x: u32, y: u16) -> u32 {
-    x.overflowing_mul(y as u32).0
-}
-
-fn _mul_32_(x: u32, y: u32) -> u32 {
-    x.overflowing_mul(y).0
-}
-
-pub fn _sub16_(x: u16, y: u16) -> u16 {
-    x.overflowing_sub(y).0
-}
-
-pub fn _sub32_(x: u32, y: u32) -> (u32, u32) {
-    //(x.saturating_sub(y), false)
-    let t = x.overflowing_sub(y);
-    (t.0, t.1 as u32)
-}
-
-fn magnitude(digits: &Vec<u16>) -> u128 {
-    let mut v = 0_u128;
-    let mut k = 0_u128;
-    for &d in digits {
-        v += (d as u128) * (1 << (k * 16));
-        k += 1;
-    }
-    v
-}
-
-const BASE: u32 = 1 << 16;
-
-fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
-    let m = u.len();
-    let n = v.len();
-    assert!(n > 1 && v[n - 1] > 0 && m >= n);
-    let s = d16_nlz(v[n - 1]);
-    assert!(s <= 15);
-    let vn = d16_normalize(&v, s, false);
-    let mut un = d16_normalize(&u, s, true);
-    let mut q: u32;
-    let mut quotient = vec![0u16; m - n + 1];
-
-    for j in (0..=m - n).rev() {
-        #[allow(unused_labels)]
-        'D3: { // calculate q
-            let mut r: u32;
-            let un_s2d: u32 = _add32_16(_mul32_16(BASE, un[j + n]), un[j + n - 1]);
-            let vn_ld: u32 = vn[n - 1] as u32;
-            q = un_s2d / vn_ld;
-            r = un_s2d % vn_ld;
-            log::info!("\tD3. Calculate q.");
-            // log::info!("\t\tj = {j}, {un_s2d}/{vn_ld}, r = {}, q = {}", r, q);
-            // log::info!("\t\tq_correction: q = {q}, v[n-2] = {}, _mul32_(q, vn[n - 2] as u32) = {},  vn[n-1] = {vn_ld}, r = {r}, un[j+n-2] = {}, (_mul32_(BASE, r) + un[j + n - 2] as u32) = {}", (vn[n - 2] as u32), _mul32_(q, vn[n - 2] as u32), (un[j + n - 2] as u32), (_mul32_(BASE, r) + un[j + n - 2] as u32));
-            while q >= BASE ||
-                r < BASE &&
-                    _mul32_16(q, vn[n - 2]) > _add32_16(_mul_32_(BASE, r), un[j + n - 2]) {
-                q -= 1;
-                r += vn_ld;
-            }
-        }
-        let t: i16;
-        //
-        #[allow(unused_labels)]
-        'D4: {
-            // multiply and subtract
-            log::info!("\tD4. multiply and subtract");
-            let mut k: u32 = 0;
-            for i in 0..n {
-                let p: u32 = _mul32_16(q, vn[i]);
-                let (t, c1) = _sub32_(un[i + j] as u32, p & 0xFFFF);
-                let t = t & 0xFFFF;
-                let (t, c2) = _sub32_(t, k);
-                let t = t & 0xFFFF;
-                un[i + j] = t as u16;
-                let (k3, c3) = _sub32_(p >> D16::BITS, t >> 16);
-                k = k3 + c1 + c2 + c3;
-            }
-            t = _sub16_(un[j + n], k as u16) as i16;
-            un[j + n] = t as u16;
-        }
-        //
-        #[allow(unused_labels)]
-        'D5: {
-            quotient[j] = q as u16; // tentative quotient digit
-        }
-        //
-        #[allow(unused_labels)]
-        'D6: {
-            // add back
-            if t < 0 {
-                log::info!("\tD6. add-back");
-                quotient[j] = quotient[j] - 1;
-                let mut k: u16 = 0;
-                for i in 0..n {
-                    // let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
-                    let t = _add32_16(_add32_16(un[i + j] as u32, vn[i]), k);
-                    un[i + j] = t as u16;
-                    k = (t >> D16::BITS) as u16;
+    fn to_u16(s: &[u8]) -> D16 {
+        assert!(s.len() > 0 && s.len() <= 4);
+        let mut n: u16 = 0;
+        let mut k: u16 = 0;
+        for &hd in s.iter().rev() {
+            match buckle::hex::val(hd) {
+                Ok(v) => {
+                    // log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", 1u32 << k*4);
+                    n += v as u16 * (1_u16 << k * 4);
+                    k += 1;
                 }
-                un[j + n] = _add16_(un[j + n], k);
+                Err(c) => panic!("bad hex char {}", c)
             }
         }
+        n
     }
 
-    quotient
+    // creates a 'big-endian' vector of u64 values.
+// may prefix the given hex str with adequate number of zeroes so the length is a multiple of 16.
+    fn vec_u16(s: &str) -> Vec<D16> {
+        if !(&s[0..2] == "0x") {
+            panic!("hex string must start with '0x'; found {:#?}", s[0..2].to_ascii_lowercase());
+        }
+
+        let maybe_prefix_zeros = |s: &str| -> Vec<u8> {
+            let n = s.len() % 4;
+            let mut lzs: Vec<u8> = if n > 0 {
+                [b'0'].repeat(4 - n)
+            } else {
+                [].into()
+            };
+            lzs.extend_from_slice(s.as_bytes());
+            lzs
+        };
+
+        let vu16: Vec<D16> =
+            maybe_prefix_zeros(&s[2..])
+                .chunks(4)
+                .map(|hc| to_u16(hc))
+                .collect();
+
+        // #[cfg(noob)]
+        if cfg!(noob)
+        {
+            // c-like iteration for storing numbers
+            let mut be_vec = vec![0u16; 0];
+            let be_hs = maybe_prefix_zeros(&s[2..]);
+            for hc in be_hs.chunks(4) {
+                be_vec.push(to_u16(hc))
+            }
+            let len = be_hs.len() / 4 +
+                match be_hs.len() % 4 {
+                    0 => 0,
+                    _ => 1
+                };
+            log::info!("noob - vec_u16: {s}");
+            assert_eq!(be_vec.len(), len);
+            assert_eq!(vu16, be_vec);
+        }
+        vu16
+    }
+
+    pub(crate) fn le_vec_u16(s: &str) -> Vec<D16> {
+        let mut v = vec_u16(s);
+        v.reverse();
+        v
+    }
+
+    fn d16_len(a: D16) -> u32 {
+        16 - a.leading_zeros()
+    }
+
+    pub(crate) fn d16_nlz(x: D16) -> u32 {
+        D16::BITS - d16_len(x)
+    }
+
+    fn _shr16_(x: D16, s: u16) -> u16 {
+        (x >> (-(s as i16) & 15)) & ((-(s as i16) >> 15) as D16)
+    }
+
+    pub(crate) fn d16_normalize(w: &Vec<D16>, s: u32, expand: bool) -> Vec<D16> {
+        let mut wn = vec![0; w.len() + expand as usize];
+        let m = w.len();
+        if expand {
+            if s > 0 {
+                wn[m] = w[m - 1] >> (D16::BITS - s);
+            }
+        }
+        for i in (1..m).rev() {
+            if s > 0 {
+                wn[i] = (w[i] << s) | (w[i - 1] >> (D16::BITS - s));
+            } else {
+                wn[i] = w[i];
+            }
+        }
+        wn[0] = w[0] << s;
+        wn
+    }
+
+    pub fn _add32_(x: u32, y: u32) -> u32 {
+        x.overflowing_add(y).0
+    }
+
+    pub fn _add32_16(x: u32, y: u16) -> u32 {
+        x.overflowing_add(y as u32).0
+    }
+
+    pub fn _add16_(x: u16, y: u16) -> u16 {
+        x.overflowing_add(y).0
+    }
+
+    fn _mul32_16(x: u32, y: u16) -> u32 {
+        x.overflowing_mul(y as u32).0
+    }
+
+    fn _mul_32_(x: u32, y: u32) -> u32 {
+        x.overflowing_mul(y).0
+    }
+
+    pub fn _sub16_(x: u16, y: u16) -> u16 {
+        x.overflowing_sub(y).0
+    }
+
+    pub fn _sub32_(x: u32, y: u32) -> (u32, u32) {
+        //(x.saturating_sub(y), false)
+        let t = x.overflowing_sub(y);
+        (t.0, t.1 as u32)
+    }
+
+    pub(crate) fn magnitude(digits: &Vec<u16>) -> u128 {
+        let mut v = 0_u128;
+        let mut k = 0_u128;
+        for &d in digits {
+            v += (d as u128) * (1 << (k * 16));
+            k += 1;
+        }
+        v
+    }
+
+    const BASE: u32 = 1 << 16;
+
+    pub(crate) fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
+        let m = u.len();
+        let n = v.len();
+        assert!(n > 1 && v[n - 1] > 0 && m >= n);
+        let s = d16_nlz(v[n - 1]);
+        assert!(s <= 15);
+        let vn = d16_normalize(&v, s, false);
+        let mut un = d16_normalize(&u, s, true);
+        let mut q: u32;
+        let mut quotient = vec![0u16; m - n + 1];
+
+        for j in (0..=m - n).rev() {
+            #[allow(unused_labels)]
+            'D3: { // calculate q
+                let mut r: u32;
+                let un_s2d: u32 = _add32_16(_mul32_16(BASE, un[j + n]), un[j + n - 1]);
+                let vn_ld: u32 = vn[n - 1] as u32;
+                q = un_s2d / vn_ld;
+                r = un_s2d % vn_ld;
+                // log::info!("\tD3. Calculate q.");
+                while q >= BASE ||
+                    r < BASE &&
+                        _mul32_16(q, vn[n - 2]) > _add32_16(_mul_32_(BASE, r), un[j + n - 2]) {
+                    q -= 1;
+                    r += vn_ld;
+                }
+            }
+            let t: i16;
+            //
+            #[allow(unused_labels)]
+            'D4: {
+                // multiply and subtract
+                // log::info!("\tD4. multiply and subtract");
+                let mut k: u32 = 0;
+                for i in 0..n {
+                    let p: u32 = _mul32_16(q, vn[i]);
+                    let (t, c1) = _sub32_(un[i + j] as u32, p & 0xFFFF);
+                    let t = t & 0xFFFF;
+                    let (t, c2) = _sub32_(t, k);
+                    let t = t & 0xFFFF;
+                    un[i + j] = t as u16;
+                    let (k3, c3) = _sub32_(p >> D16::BITS, t >> 16);
+                    k = k3 + c1 + c2 + c3;
+                }
+                t = _sub16_(un[j + n], k as u16) as i16;
+                un[j + n] = t as u16;
+            }
+            //
+            #[allow(unused_labels)]
+            'D5: {
+                quotient[j] = q as u16; // tentative quotient digit
+            }
+            //
+            #[allow(unused_labels)]
+            'D6: {
+                // add back
+                if t < 0 {
+                    // log::info!("\tD6. add-back");
+                    quotient[j] = quotient[j] - 1;
+                    let mut k: u16 = 0;
+                    for i in 0..n {
+                        // let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
+                        let t = _add32_16(_add32_16(un[i + j] as u32, vn[i]), k);
+                        un[i + j] = t as u16;
+                        k = (t >> D16::BITS) as u16;
+                    }
+                    un[j + n] = _add16_(un[j + n], k);
+                }
+            }
+        }
+
+        quotient
+    }
 }
 /*
  * Simple test mode:
@@ -258,7 +259,8 @@ fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
 #[cfg(test)]
 mod d16_k_tests {
     use buckle::init_logger;
-    use super::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
+
+    use super::kd16::{D16, d16_nlz, d16_normalize, div, le_vec_u16, magnitude};
 
     #[test]
     fn u16_arith() {
@@ -343,7 +345,6 @@ mod d16_k_tests {
             Case(le_vec_u16("0xb72406bf2b361790bfbf125e738ce735cecd1d529c25b0d79a4e5ec95f28657deb3a4ef0e5c551a0"),
                  le_vec_u16("0x6df4c2dfdc781bfc2dae1207156c1a6aea0a572180213c261b13"),
                  le_vec_u16("0x1aa637af3a1f551eb3dfc6f23a601")),
-
             /* python3
                import secrets
                u = secrets.token_hex(512)
