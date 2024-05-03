@@ -84,7 +84,7 @@ pub fn vec_u64(s: &str) -> Vec<u64> {
                     0 => 0,
                     _ => 1
                 };
-            log::info!("noob - vec_u64: {s}");
+            // log::info!("noob - vec_u64: {s}");
             assert_eq!(be_vec.len(), len);
             assert_eq!(vu64, be_vec);
         }

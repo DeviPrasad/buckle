@@ -31,7 +31,7 @@ impl PartialEq<Self> for Int {
     fn eq(&self, n2: &Self) -> bool {
         self.valid();
         n2.valid();
-        self.compare(&n2).2 == 0
+        self.compare_abs(&n2).2 == 0
     }
 }
 
@@ -39,7 +39,7 @@ impl PartialOrd for Int {
     fn partial_cmp(&self, n2: &Self) -> Option<Ordering> {
         self.valid();
         n2.valid();
-        let (_g, _l, ord) = self.compare(&n2);
+        let (_g, _l, ord) = self.compare_abs(&n2);
         match ord {
             0 => Some(Ordering::Equal),
             1 => Some(Ordering::Greater),
@@ -441,7 +441,7 @@ impl Int {
         }
     }
 
-    pub fn compare<'a>(&'a self, t: &'a Int) -> (/* larger */&Int, /* smaller */&Int, /* sign */i32) {
+    pub fn compare_abs<'a>(&'a self, t: &'a Int) -> (/* larger */&Int, /* smaller */&Int, /* sign */i32) {
         let (pos_lnzd, pos_lnzb) = self.lnzd_lnzb();
         let (t_pos_lnzd, t_pos_lnzb) = t.lnzd_lnzb();
         if pos_lnzd > t_pos_lnzd {
@@ -454,13 +454,15 @@ impl Int {
             } else if pos_lnzb < t_pos_lnzb {
                 (t, self, -1)
             } else {
-                // when the leading positions are all same, scan from the most-significant digit.
-                for k in (0..=pos_lnzd).rev() {
-                    let i = k as usize;
-                    if self.mag[i] < t.mag[i] {
-                        return (t, self, -1)
-                    } else if self.mag[i] > t.mag[i] {
-                        return (self, t, 1)
+                if pos_lnzd >= 0 {
+                    // when the leading positions are all same, scan from the most-significant digit.
+                    for k in (0..=pos_lnzd).rev() {
+                        let i = k as usize;
+                        if self.mag[i] < t.mag[i] {
+                            return (t, self, -1)
+                        } else if self.mag[i] > t.mag[i] {
+                            return (self, t, 1)
+                        }
                     }
                 }
                 (self, t, 0)
@@ -477,7 +479,6 @@ impl Int {
             (mag[i], carry) = adc(x, y, carry);
         }
         let res = Int::from_le_digits_vec(mag);
-        res.valid();
         (res, carry)
     }
 
@@ -490,21 +491,36 @@ impl Int {
             let (mut sum, c) = Self::do_add(self, n2);
             sum.sign = self.sign;
             sum.set_invariants();
-            sum.valid();
             (sum, c)
         } else {
-            // one of n1 an dn2 is negative
-            let (pos, neg) = if !s1 { // n1 is positive
+/// *
+            // either n1 or n2 is negative, so find out the larger magnitude
+            let (res, s) = self.sub_abs(&n2);
+            return (res, s as Digit)
+
+/*
+            let (mut sum, c) = Self::do_add(a1, a2);
+            sum.sign = ord;
+            sum.set_invariants();
+            (sum, c)
+*/
+/*
+            let (p, n) = if !s1 { // n1 is positive
                 (self, n2)
             } else { // n2 is positive
                 (n2, self)
             };
-            let (mag, borrow, _) = Self::do_sub(&pos, &neg);
+            let (mag, borrow, sign) = Self::do_sub(&p, &n);
             let mut res = Int::from_le_digits_vec(mag);
+            let d: i64 = match sign {
+                0 => 0,
+                _ => 1
+            };
+            // res.sign = ((-(borrow as i64)) | d) as i32;
             res.sign = (-(borrow as i64)) as i32;
             res.set_invariants();
-            res.valid();
             (res, borrow)
+*/
         }
     }
 
@@ -531,19 +547,15 @@ impl Int {
         }
     }
 
-    fn do_sub(n1: &Int, n2: &Int) -> (Vec<Digit>, /* borrow*/ Digit, /* sign */Digit) {
+    fn do_sub(n1: &Int, n2: &Int) -> (Vec<Digit>, /* borrow */ Digit) {
         let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
 
         let mut borrow: Digit = 0;
-        let mut sign: Digit = 0; // zero when x.mag == y.mag
         let mut mag = vec![0; len as usize];
         for (i, (&x, &y)) in n1_iter.zip(n2_iter).enumerate() {
-            let diff: Digit; // diff between each corresponding limbs of x and y
-            (diff, borrow) = sbb(x, y, borrow);
-            sign |= diff;
-            mag[i] = diff;
+            ( mag[i], borrow) = sbb(x, y, borrow);
         }
-        (mag, borrow, sign)
+        (mag, borrow)
     }
 
     pub fn sub(&self, n2: &Int) -> (Int, i32) {
@@ -553,27 +565,17 @@ impl Int {
         let (s1, s2) = (self.negative(), n2.negative());
         if (s1, s2) == (false, true) || (s1, s2) == (true, false) {
             let (mut sum, c) = Self::do_add(self, n2);
-            sum.sign = 1;
+            sum.sign = self.sign;
             sum.set_invariants();
-            sum.valid();
             (sum, c as i32)
         } else {
             // both operands are either positive or negative
-            let (n1, n2) = if !s1 { // n1 is positive
-                (self, n2)
-            } else {
-                (n2, self)
-            };
-            let (mag, borrow, sign) = Self::do_sub(&n1, &n2);
-            let d: i64 = match sign {
-                0 => 0,
-                _ => 1
-            };
+            let (_, _, sign) = self.compare_abs(&n2);
+            let (mag, borrow) = Self::do_sub(&self, &n2);
             let mut res = Int::from_le_digits_vec(mag);
-            res.sign = -(borrow as i32);
+            res.sign = sign;
             res.set_invariants();
-            res.valid();
-            (res, ((-(borrow as i64)) | d) as i32)
+            (res, (-(borrow as i64)) as i32)
         }
     }
 
@@ -582,9 +584,11 @@ impl Int {
         self.valid();
         n2.valid();
 
-        let (n1, n2, sign) = self.compare(&n2);
-        let (mag, _, _) = Self::do_sub(n1, n2);
-        let res = Int::from_le_digits_vec(mag);
+        let (n1, n2, sign) = self.compare_abs(&n2);
+        let (mag, _) = Self::do_sub(n1, n2);
+        let mut res = Int::from_le_digits_vec(mag);
+        res.sign = sign;
+        res.set_invariants();
         (res, sign)
     }
 
@@ -745,7 +749,6 @@ impl Int {
             q.mag.resize((dividend.width() - divisor.width() + 1) as usize, 0);
             q.cb = Self::bit_width_for(q.mag.len() as u32);
             q.set_invariants();
-            q.valid();
             // l is the zero-based index of the single 1-bit.
             // Clearly, the digit containing this bit is l/64.
             // The bit position within this digit is l%64.
@@ -755,10 +758,9 @@ impl Int {
             r.mag[rem_digit as usize] &= (1 << bit) - 1;
             r.set_invariants();
             r.compact_mut();
-            r.valid();
             (q, r)
         } else {
-            let (_, _, co) = dividend.compare(divisor);
+            let (_, _, co) = dividend.compare_abs(divisor);
             if co == 0 { // dividend == divisor
                 (Int::one(Digit::BITS), Int::zero(Digit::BITS))
             } else if co < 0 { // dividend < divisor
@@ -783,7 +785,6 @@ impl Int {
         let mut q = dividend.shr(l);
         q.set_invariants();
         q.compact_mut();
-        q.valid();
         // l is the zero-based index of the single 1-bit.
         // Clearly, the digit containing this bit is l/64.
         // The bit position within this digit is l%64.
@@ -794,7 +795,6 @@ impl Int {
         r.mag[rem_digit as usize] &= (1 << bit) - 1;
         r.set_invariants();
         r.compact_mut();
-        r.valid();
         (q, r)
     }
 
@@ -814,7 +814,6 @@ impl Int {
 
         let mut num = Int::from_le_digits_vec(wn);
         num.set_invariants();
-        num.valid();
         num
     }
 
@@ -875,7 +874,7 @@ impl Int {
                 let vn_ld: u128 = vn.digit(n - 1) as u128;
                 q = un_s2d / vn_ld;
                 let mut r: u128 = un_s2d % vn_ld;
-                log::info!("\tD3. Calculate q.");
+                //log::info!("\tD3. Calculate q.");
                 while q >= BASE ||
                     r < BASE &&
                         mul128_64(q, vn.digit(n - 2)) > add128_64(mul128(BASE, r), un.digit(j + n - 2)) {
@@ -887,7 +886,7 @@ impl Int {
             #[allow(unused_labels)]
             'D4: {
                 // multiply and subtract
-                log::info!("\tD4. multiply and subtract");
+                //log::info!("\tD4. multiply and subtract");
                 let q_mul_vn_ = vn.mul_digit(q as Digit);
                 let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
                 let (un_sub_q_mul_vn, _) = un_j_n.sub(&q_mul_vn_);
@@ -905,7 +904,7 @@ impl Int {
             'D6: {
                 // add back
                 if window_last_digit < 0 {
-                    log::info!("\tD6. add-back");
+                    //log::info!("\tD6. add-back");
                     quotient.dec(j); // decrease quotient[j] by 1
                     let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
                     let un_j_n = un_j_n.add(&vn).0; // we must ignore the carry
@@ -942,7 +941,6 @@ impl Int {
         }
         q.set_invariants();
         q.compact_mut();
-        q.valid();
         (q, Int::new_digit(Digit::BITS, r as Digit))
     }
 
@@ -960,7 +958,6 @@ impl Int {
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= self.mag[l as usize] & !(1 << p);
         self.set_invariants();
-        self.valid();
         self
     }
 
@@ -1004,7 +1001,6 @@ impl Int {
             t.mag[0] <<= s;
         }
         t.set_invariants();
-        t.valid();
     }
 
     fn shl_mut(&mut self, count: u32) {
@@ -1023,7 +1019,6 @@ impl Int {
             count -= c;
         }
         t.set_invariants();
-        t.valid();
     }
 
     fn shl_expand(&self, count: u32) -> Int {
@@ -1062,11 +1057,10 @@ impl Int {
             count -= c;
         }
         t.set_invariants();
-        t.valid();
     }
 
     // shift-right small
-// useful while computing extended binary GCD, for example.
+    // useful while computing extended binary GCD, for example.
     pub fn shrs_mut(&mut self, s: u32) {
         self.valid();
         assert!(s < 64, "shrs_mut - left shift must be less than 64.");
@@ -1082,7 +1076,6 @@ impl Int {
             t.mag[dc - 1] >>= s;
         }
         t.set_invariants();
-        t.valid();
     }
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {
@@ -1092,7 +1085,6 @@ impl Int {
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= 1 << p;
         self.set_invariants();
-        self.valid();
         self
     }
 
@@ -1104,7 +1096,6 @@ impl Int {
             res.mag[i] = x & y;
         });
         res.set_invariants();
-        res.valid();
         res
     }
 
@@ -1115,7 +1106,6 @@ impl Int {
             self.mag[i] &= y;
         }
         self.set_invariants();
-        self.valid();
         self
     }
 
@@ -1127,7 +1117,6 @@ impl Int {
             res.mag[i] = x | y;
         });
         res.set_invariants();
-        res.valid();
         res
     }
 
@@ -1138,7 +1127,6 @@ impl Int {
             self.mag[i] |= y;
         }
         self.set_invariants();
-        self.valid();
         self
     }
 
@@ -1152,7 +1140,6 @@ impl Int {
             res.mag[i] = x ^ y;
         });
         res.set_invariants();
-        res.valid();
         res
     }
 
@@ -1163,7 +1150,6 @@ impl Int {
             self.mag[i] ^= y;
         }
         self.set_invariants();
-        self.valid();
         self
     }
 
@@ -1769,6 +1755,16 @@ mod int_test {
             let (c, lx) = x.count_ones();
             assert!(c == 8 && lx == 127);
         }
+    }
+
+    #[test]
+    fn subtract_basic() {
+        init_logger(true);
+        let x = Int::from_le_digits_vec(vec![1]);
+        let y = Int::from_le_digits_vec(vec![4]);
+        let (m, d) = Int::do_sub(&x, &y);
+        assert_eq!(m, [-3_i64 as u64]);
+        assert_eq!(d, 1);
     }
 
     #[test]
