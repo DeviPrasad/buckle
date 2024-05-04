@@ -23,7 +23,16 @@ use crate::bits::{adc, add128_64, mul128, mul128_64, mul64, sbb};
 
 impl std::fmt::Display for Int {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "bits:{:};digits:{:};sign:{:+};mag_hex:{:X?}", self.bit_width(), self.width(), self.sign, self.mag)
+        write!(f, "sign:{:+};mag:{:X?}", self.sign, self.mag)
+    }
+}
+
+impl std::fmt::Debug for Int {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("Int")
+           .field("sign", &self.sign)
+           .field("mag", &self.mag)
+           .finish()
     }
 }
 
@@ -72,10 +81,8 @@ impl Int {
 
     pub fn sign_of(s: i32) -> i32 {
         match s {
-            0..=i32::MAX => 1,
-            _ => {
-                -1
-            }
+            0..=i32::MAX => 1, // zero or positive
+            _ => -1
         }
     }
 
@@ -91,7 +98,7 @@ impl Int {
 
     pub fn positive(&self) -> bool {
         self.valid();
-        self.sign > 0
+        self.sign >= 0
     }
 
     #[inline]
@@ -171,7 +178,7 @@ impl Int {
         n
     }
 
-    fn set_invariants(&mut self) {
+    pub fn fix_sign(&mut self) {
         let (pos_lnzd, pos_lnzb) = self.lnzd_lnzb();
         if pos_lnzd == -1 {
             assert_eq!(pos_lnzb, -1);
@@ -180,6 +187,18 @@ impl Int {
             self.sign = Self::sign_of(self.sign);
         }
         self.valid();
+    }
+
+    pub fn set_sign(&mut self, sign: i32) {
+        self.sign = sign;
+        self.fix_sign();
+    }
+
+    pub fn assign_positive(&mut self) {
+        self.set_sign(1);
+    }
+    pub fn assign_negative(&mut self) {
+        self.set_sign(-1);
     }
 
     // count of leading zeroes in this Int
@@ -229,7 +248,7 @@ impl Int {
             res.mag.resize(Self::width_of(bit_len) as usize, 0);
             res.cb = bit_len;
         }
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
@@ -241,14 +260,14 @@ impl Int {
             sign: 1,
             mag: digits,
         };
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
     fn truncate(&mut self, digits_len: u32) {
         self.cb = digits_len * Digit::BITS;
         self.mag.resize(digits_len as usize, 0);
-        self.set_invariants();
+        self.fix_sign();
     }
 
     // mint a new Int whose width is more-or-less-or-same as self.
@@ -287,7 +306,7 @@ impl Int {
             let new_width = Int::width_of(nbw) as usize;
             self.cb = nbw;
             self.mag.resize(new_width, 0);
-            self.set_invariants();
+            self.fix_sign();
             true
         } else {
             false
@@ -297,7 +316,7 @@ impl Int {
     pub fn new_digit(bit_len: u32, val: Digit) -> Self {
         let mut res = Self::new(bit_len);
         res.mag[0] = val;
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
@@ -324,7 +343,7 @@ impl Int {
         self.valid();
         let mut r = self.mag[0] == 1;
         for d in 1..self.width() {
-            r = r && d == 0
+            r = r && (d == 0)
         }
         r
     }
@@ -332,7 +351,7 @@ impl Int {
     // check if the least significant bit of the magnitude is zero.
     pub fn even(&self) -> bool {
         self.valid();
-        self.sign != 0 && (self.mag[0] & 1) == 0
+        (self.mag[0] & 1) == 0
     }
 
     pub fn is_compact(&self) -> bool {
@@ -355,8 +374,7 @@ impl Int {
         };
         self.mag.truncate(len);
         self.cb = Self::bit_width_for(len as u32);
-        self.set_invariants();
-        self.valid();
+        self.fix_sign();
     }
 
     pub fn window(&mut self, start: u32, count: u32) -> Int {
@@ -374,7 +392,7 @@ impl Int {
         for (i, s) in that.mag.iter().enumerate() {
             self.mag[start as usize + i] = *s;
         }
-        self.set_invariants();
+        self.fix_sign();
         self.valid();
     }
 
@@ -395,7 +413,7 @@ impl Int {
     pub fn digit_update(&mut self, i: u32, rval: Digit) {
         assert!(i < self.width(), "Int::update - invalid index {i} >= {}", self.width());
         self.mag[i as usize] = rval;
-        self.set_invariants();
+        self.fix_sign();
     }
 
     // returns (count_of_one_bits, most_significant_set_bit)
@@ -486,46 +504,53 @@ impl Int {
         self.valid();
         n2.valid();
 
-        let (s1, s2) = (self.negative(), n2.negative());
-        if (s1, s2) == (false, false) || (s1, s2) == (true, true) {
-            let (mut sum, c) = Self::do_add(self, n2);
-            sum.sign = self.sign;
-            sum.set_invariants();
-            (sum, c)
-        } else {
-/// *
-            // either n1 or n2 is negative, so find out the larger magnitude
-            let (res, s) = self.sub_abs(&n2);
-            return (res, s as Digit)
-
-/*
-            let (mut sum, c) = Self::do_add(a1, a2);
-            sum.sign = ord;
-            sum.set_invariants();
-            (sum, c)
-*/
-/*
-            let (p, n) = if !s1 { // n1 is positive
-                (self, n2)
-            } else { // n2 is positive
-                (n2, self)
-            };
-            let (mag, borrow, sign) = Self::do_sub(&p, &n);
-            let mut res = Int::from_le_digits_vec(mag);
-            let d: i64 = match sign {
-                0 => 0,
-                _ => 1
-            };
-            // res.sign = ((-(borrow as i64)) | d) as i32;
-            res.sign = (-(borrow as i64)) as i32;
-            res.set_invariants();
-            (res, borrow)
-*/
-        }
+        let (mut sum, c) = Self::do_add(self, n2);
+        sum.set_sign(1);
+        (sum, c)
     }
 
     pub fn sum(&self, n2: &Int) -> Int {
         self.add(&n2).0
+    }
+
+    pub fn isum_cx(a: &Int, b: &Int) -> Int {
+        if a.positive() {
+            if b.positive() { // a + b
+                let mut r = a.sum_xc(&b);
+                r.assign_positive();
+                r
+            } else { // a - b
+                a.subtract(&b)
+            }
+        } else {
+            if b.negative() {  // -a - b = -(a + b)
+                let mut r = a.sum_xc(&b);
+                r.assign_negative();
+                r
+            } else { // -a + b = b - a
+                b.subtract(&a)
+            }
+        }
+    }
+
+    // carry is absorbed as a digit in the sum.
+    pub fn sum_xc(&self, n2: &Int) -> Int {
+        Self::do_sum_xc(self, &n2)
+    }
+
+    fn do_sum_xc(n1: &Int, n2: &Int) -> Int {
+        let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
+
+        let mut carry: Digit = 0;
+        let mut mag = vec![0; len as usize];
+        for (i, (&x, &y)) in n1_iter.zip(n2_iter).enumerate() {
+            (mag[i], carry) = adc(x, y, carry);
+        }
+        if carry > 0 {
+            mag.push(carry);
+        }
+        let res = Int::from_le_digits_vec(mag);
+        res
     }
 
     fn width_equalizer<'a>(n1: &'a Int, n2: &'a Int) -> (impl Iterator<Item=&'a Digit>,
@@ -562,21 +587,12 @@ impl Int {
         self.valid();
         n2.valid();
 
-        let (s1, s2) = (self.negative(), n2.negative());
-        if (s1, s2) == (false, true) || (s1, s2) == (true, false) {
-            let (mut sum, c) = Self::do_add(self, n2);
-            sum.sign = self.sign;
-            sum.set_invariants();
-            (sum, c as i32)
-        } else {
-            // both operands are either positive or negative
-            let (_, _, sign) = self.compare_abs(&n2);
-            let (mag, borrow) = Self::do_sub(&self, &n2);
-            let mut res = Int::from_le_digits_vec(mag);
-            res.sign = sign;
-            res.set_invariants();
-            (res, (-(borrow as i64)) as i32)
-        }
+        let (_l, _, ord) = self.compare_abs(&n2);
+        let (mag, borrow) = Self::do_sub(&self, &n2);
+        assert!(borrow == 0 || borrow == 1);
+        let mut res = Int::from_le_digits_vec(mag);
+        res.set_sign(ord);
+        (res, -(borrow as i32))
     }
 
     // subtract two magnitudes. Indicate the sign too.
@@ -584,12 +600,36 @@ impl Int {
         self.valid();
         n2.valid();
 
-        let (n1, n2, sign) = self.compare_abs(&n2);
-        let (mag, _) = Self::do_sub(n1, n2);
+        let (l, s, ord) = self.compare_abs(&n2);
+        let (mag, _) = Self::do_sub(l, s);
         let mut res = Int::from_le_digits_vec(mag);
-        res.sign = sign;
-        res.set_invariants();
-        (res, sign)
+        res.set_sign(ord);
+        (res, ord)
+    }
+
+    pub fn subtract(&self, n2: &Int) -> Int {
+        self.sub_abs(&n2).0
+    }
+
+    pub fn isub(a: &Int, b: &Int) -> Int {
+        if a.negative() {
+            if b.positive() { // -a - b = -(a + b)
+                let mut r = a.sum_xc(&b);
+                r.assign_negative();
+                r
+            } else { // -a - (-b) = -a + b = b - a
+                b.subtract(&a)
+            }
+        } else { // a is positive
+            if b.negative() { // a - (-b) = (a + b)
+                let mut r = a.sum_xc(&b);
+                r.assign_positive();
+                r
+            } else { // a - b
+                let r = a.subtract(&b);
+                r
+            }
+        }
     }
 
     // acc += n * x
@@ -614,7 +654,7 @@ impl Int {
     pub fn mul(&self, n2: &Int) -> Int {
         let mut prod = Self::multiply_base_case(&self, n2);
         prod.sign = self.sign * n2.sign;
-        prod.set_invariants();
+        prod.fix_sign();
         prod
     }
 
@@ -622,7 +662,7 @@ impl Int {
         let mut prod = Self::multiply_karatsuba(&self, n2);
         prod.truncate(self.width() + n2.width());
         prod.sign = self.sign * n2.sign;
-        prod.set_invariants();
+        prod.fix_sign();
         prod
     }
 
@@ -748,7 +788,7 @@ impl Int {
             let mut q = dividend.shr(l);
             q.mag.resize((dividend.width() - divisor.width() + 1) as usize, 0);
             q.cb = Self::bit_width_for(q.mag.len() as u32);
-            q.set_invariants();
+            q.fix_sign();
             // l is the zero-based index of the single 1-bit.
             // Clearly, the digit containing this bit is l/64.
             // The bit position within this digit is l%64.
@@ -756,7 +796,7 @@ impl Int {
             let (rem_digit, bit) = (l / Digit::BITS, l % 64);
             let mut r = dividend.resize(max(l, 1) * Digit::BITS);
             r.mag[rem_digit as usize] &= (1 << bit) - 1;
-            r.set_invariants();
+            r.fix_sign();
             r.compact_mut();
             (q, r)
         } else {
@@ -772,7 +812,7 @@ impl Int {
                 let n = divisor.width(); // count of digits in the divisor
                 assert!(m > 2 && n >= 2 && m >= n + 1);
                 let (mut q, r) = dividend.div_knuth(&divisor);
-                q.set_invariants();
+                q.fix_sign();
                 q.compact_mut();
                 (q, r)
             }
@@ -783,7 +823,7 @@ impl Int {
         // divisor is a power of 2, and therefore, simply shr the dividend by 'l'
         // NOTE: this naturally handles division by 1 (when l = 0).
         let mut q = dividend.shr(l);
-        q.set_invariants();
+        q.fix_sign();
         q.compact_mut();
         // l is the zero-based index of the single 1-bit.
         // Clearly, the digit containing this bit is l/64.
@@ -793,7 +833,7 @@ impl Int {
         eprintln!("divide l = {l}");
         let mut r = dividend.resize(l);
         r.mag[rem_digit as usize] &= (1 << bit) - 1;
-        r.set_invariants();
+        r.fix_sign();
         r.compact_mut();
         (q, r)
     }
@@ -813,7 +853,7 @@ impl Int {
         wn[0] = w[0] << s;
 
         let mut num = Int::from_le_digits_vec(wn);
-        num.set_invariants();
+        num.fix_sign();
         num
     }
 
@@ -939,7 +979,7 @@ impl Int {
                 assert_eq!(tq as u64, q.mag[l - i]);
             }
         }
-        q.set_invariants();
+        q.fix_sign();
         q.compact_mut();
         (q, Int::new_digit(Digit::BITS, r as Digit))
     }
@@ -957,7 +997,7 @@ impl Int {
         assert!(pos < self.bit_width(), "clear_bit_mut {pos} >={:?}", self.bit_width());
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= self.mag[l as usize] & !(1 << p);
-        self.set_invariants();
+        self.fix_sign();
         self
     }
 
@@ -1000,7 +1040,7 @@ impl Int {
             }
             t.mag[0] <<= s;
         }
-        t.set_invariants();
+        t.fix_sign();
     }
 
     fn shl_mut(&mut self, count: u32) {
@@ -1018,7 +1058,7 @@ impl Int {
             t.mag[0] = (t.mag[0] << (c - 1)) << 1;
             count -= c;
         }
-        t.set_invariants();
+        t.fix_sign();
     }
 
     fn shl_expand(&self, count: u32) -> Int {
@@ -1048,34 +1088,32 @@ impl Int {
             let dc = t.width() as usize;
             // number of bits to be right-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for k in 0..=dc as isize - 2 { // if cd < 2, loop will not be executed
+            for k in 0..dc-1 {
                 let i = k as usize;
                 // we need to be careful about the case where c == 64.
-                t.mag[i] = (t.mag[i] >> (c - 1) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
+                t.mag[i] = ((t.mag[i] >> (c - 1)) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
             }
-            t.mag[dc - 1] = t.mag[dc - 1] >> (c - 1) >> 1;
+            t.mag[dc - 1] = (t.mag[dc - 1] >> (c - 1)) >> 1;
             count -= c;
         }
-        t.set_invariants();
+        t.fix_sign();
     }
 
     // shift-right small
     // useful while computing extended binary GCD, for example.
     pub fn shrs_mut(&mut self, s: u32) {
         self.valid();
-        assert!(s < 64, "shrs_mut - left shift must be less than 64.");
+        assert!(s > 0 && s < 64, "shrs_mut - left shift must be less than 64.");
         let t = self;
         let dc = t.width() as usize;
         if s > 0 && s < 64 {
-            for k in (0..=dc as i32 - 2).rev() {
-                let i = k as usize;
+            for i in 0..dc-1 {
                 // this easily copes with the case where c == Digit::BITS
-                // 0 < s < Digit::BITS ==> 1 <= (Digit::BITS - s) < Digit::BITS
                 t.mag[i] = (t.mag[i] >> s) | (t.mag[i + 1] << (Digit::BITS - s));
             }
             t.mag[dc - 1] >>= s;
         }
-        t.set_invariants();
+        t.fix_sign();
     }
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {
@@ -1084,7 +1122,7 @@ impl Int {
         assert!(pos < self.bit_width(), "set_bit_mut {pos} >= {:?}", self.bit_width());
         let (l, p) = (pos / Digit::BITS, pos % Digit::BITS);
         self.mag[l as usize] |= 1 << p;
-        self.set_invariants();
+        self.fix_sign();
         self
     }
 
@@ -1095,7 +1133,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x & y;
         });
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
@@ -1105,7 +1143,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] &= y;
         }
-        self.set_invariants();
+        self.fix_sign();
         self
     }
 
@@ -1116,7 +1154,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x | y;
         });
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
@@ -1126,7 +1164,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] |= y;
         }
-        self.set_invariants();
+        self.fix_sign();
         self
     }
 
@@ -1139,7 +1177,7 @@ impl Int {
         self.mag.iter().zip(n2.mag.iter()).enumerate().for_each(|(i, (&x, &y))| {
             res.mag[i] = x ^ y;
         });
-        res.set_invariants();
+        res.fix_sign();
         res
     }
 
@@ -1149,7 +1187,7 @@ impl Int {
         for (i, &y) in n2.mag.iter().enumerate() {
             self.mag[i] ^= y;
         }
-        self.set_invariants();
+        self.fix_sign();
         self
     }
 
@@ -1705,15 +1743,22 @@ mod int_test {
     }
 
     #[test]
+    fn test_shrs() {
+        let mut x = Int::from_le_digits_vec(vec![10677954934600607138, 4157022969073861274, 1]);
+        x.shrs_mut(1);
+        assert_eq!(x.mag, [5338977467300303569, 11301883521391706445, 0]);
+    }
+
+    #[test]
     fn int_shr() {
         {
             let x128 = Int::from_le_digits_vec(vec![0xFFFF000000050003, 0]);
             let n2 = x128.shr(8);
-            assert_eq!(n2.mag, [0x00FFFF0000000500, 0]);
+            assert_eq!(n2.mag, [0xFFFF000000050003 >> 8, 0]);
             let n2 = x128.shr(32);
-            assert_eq!(n2.mag, [0x00000000FFFF0000, 0]);
+            assert_eq!(n2.mag, [0xFFFF000000050003 >> 32, 0]);
             let n2 = n2.shr(64);
-            assert_eq!(n2.mag, [0, 0]);
+            assert_eq!(n2.mag, [0xFFFF000000050003 >> 32 >> 32, 0]);
         }
         {
             let x128 = Int::from_le_digits_vec(vec![0xFFFF000000050003, 0x2222222222222222]);
@@ -1773,8 +1818,13 @@ mod int_test {
         let y = Int::from_le_digits_vec(vec![200, 43, 1, 1, u64::MAX, 1]);
         let zero_256 = Int::new_digit(64, 0);
 
+        let (d, s) = zero_256.sub(&Int::zero(64));
+        assert_eq!(s, 0);
+        assert_eq!(d.mag, [0]);
+
         let (d, s) = x.sub(&zero_256);
-        assert_eq!(s, 1);
+        assert_eq!(s, 0);
+        assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
 
         let (d, s) = zero_256.sub(&x);
@@ -1783,26 +1833,35 @@ mod int_test {
 
         let (d, s) = zero_256.sub_abs(&x);
         assert_eq!(s, -1);
+        assert_eq!(d.sign, -1);
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
+
+        let (d, s) = x.sub(&y);
+        assert_eq!((s, d.sign), (-1, -1));
+        assert_eq!(d.mag, [-100_i64 as u64, -1_i64 as u64, -1_i64 as u64, 0, 0, -1_i64 as u64]);
 
         let (d, s) = x.sub_abs(&zero_256);
         assert_eq!(s, 1);
+        assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
 
         assert_eq!(x.sub_abs(&y).0.mag, y.sub_abs(&x).0.mag);
         assert_eq!(x.sub_abs(&y).1, -y.sub_abs(&x).1);
 
+        let (d, s) = y.sub(&x);
+        assert_eq!(s, 0);
+        assert_eq!(d.sign, 1);
+        assert_eq!(d.mag, [100, 0, 0, -1_i64 as u64, u64::MAX, 0]);
+
         let (d, s) = y.sub_abs(&x);
         assert_eq!(s, 1);
+        assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 0, 0, -1_i64 as u64, u64::MAX, 0]);
 
         let (d, s) = x.sub(&x);
         assert_eq!(s, 0);
+        assert_eq!(d.sign, 0);
         assert_eq!(d.mag, [0, 0, 0, 0, 0]);
-
-        let (d, s) = x.sub(&y);
-        assert_eq!(s, -1);
-        assert_eq!(d.mag, [-100_i64 as u64, -1_i64 as u64, -1_i64 as u64, 0, 0, -1_i64 as u64]);
     }
 
     #[test]
