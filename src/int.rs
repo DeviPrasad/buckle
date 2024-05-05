@@ -103,7 +103,6 @@ impl Int {
 
     #[inline]
     fn check_len(cb: u32) {
-        #[cfg(any(debug_assertions, release_test))]
         assert!(cb >= Int::BIT_WIDTH_MIN && cb <= Int::BIT_WIDTH_MAX, "Int::check_len - bad bit length");
     }
 
@@ -1088,8 +1087,7 @@ impl Int {
             let dc = t.width() as usize;
             // number of bits to be right-shifted, in this iteration, from each digit.
             let c = min(count, Digit::BITS);
-            for k in 0..dc-1 {
-                let i = k as usize;
+            for i in 0..dc-1 {
                 // we need to be careful about the case where c == 64.
                 t.mag[i] = ((t.mag[i] >> (c - 1)) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
             }
@@ -1104,6 +1102,10 @@ impl Int {
     pub fn shrs_mut(&mut self, s: u32) {
         self.valid();
         assert!(s > 0 && s < 64, "shrs_mut - left shift must be less than 64.");
+
+        #[cfg(any(debug_assertions, release_test))]
+        let _dbg_s_ = Int::divide_by_digit(self, 1<<s).0;
+
         let t = self;
         let dc = t.width() as usize;
         if s > 0 && s < 64 {
@@ -1114,6 +1116,9 @@ impl Int {
             t.mag[dc - 1] >>= s;
         }
         t.fix_sign();
+
+        #[cfg(any(debug_assertions, release_test))]
+        assert_eq!(*t, _dbg_s_);
     }
 
     pub fn set_bit_mut(mut self, pos: u32) -> Int {
