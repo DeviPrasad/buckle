@@ -1,17 +1,18 @@
 use crate::{Digit, Int};
 
 impl Int {
+    #[allow(clippy::too_many_arguments)]
     fn check_invariant(_tag: &str, x: &Int, y: &Int, s: &Int, t: &Int, u: &Int, v: &Int, alpha: &Int, beta: &Int) {
         {
-            let sxa = s.mul(&alpha).compact();
-            let txb = t.mul(&beta).compact();
-            let sxa_plus_txb = Int::isum_cx(&sxa, &txb);
+            let sxa = s.mul(alpha).compact();
+            let txb = t.mul(beta).compact();
+            let sxa_plus_txb = sxa.sum(&txb);
             assert_eq!(*y, sxa_plus_txb, "[{_tag}] [y value] ");
         }
         {
-            let uxa = u.mul(&alpha).compact();
-            let vxb = v.mul(&beta).compact();
-            let uxa_plus_vxb = Int::isum_cx(&uxa, &vxb);
+            let uxa = u.mul(alpha).compact();
+            let vxb = v.mul(beta).compact();
+            let uxa_plus_vxb = uxa.sum(&vxb);
             assert_eq!(*x, uxa_plus_vxb, "[{_tag}] [x value] ");
         }
     }
@@ -25,6 +26,20 @@ impl Int {
             sr *= 2;
         }
         (x, y, sr)
+    }
+
+    fn update_common(x: &mut Int, mut u: Int, mut v: Int, alpha: &Int, beta: &Int) -> (Int, Int) {
+        x.shrs_mut(1);
+        if u.even() && v.even() {
+            u.shrs_mut(1);
+            v.shrs_mut(1);
+        } else {
+            u = u.sum(beta);
+            u.shrs_mut(1);
+            v = Self::isub(&v, alpha);
+            v.shrs_mut(1);
+        }
+        (u, v)
     }
 
     // extended binary GCD algorithm
@@ -50,44 +65,26 @@ impl Int {
                                             Int::zero(Digit::BITS),
                                             Int::one(Digit::BITS));
 
-        let mut dbg_step: u64 = 0;
+        let mut _dbg_step_: u64 = 0;
         // from here on the following invariant will be maintained
         // x = u * alpha + v * beta, and
         // y = s * alpha + t * beta
-        Self::check_invariant(&"Pre_Reduce_X.", &x, &y, &s, &t, &u, &v, &alpha, &beta);
+        Self::check_invariant("Pre_Reduce_X.", &x, &y, &s, &t, &u, &v, &alpha, &beta);
         while x.even() {
-            dbg_step += 1;
-            x.shrs_mut(1);
-            if u.even() && v.even() {
-                u.shrs_mut(1);
-                v.shrs_mut(1);
-            } else {
-                u = Self::isum_cx(&u, &beta);
-                u.shrs_mut(1);
-                v = Self::isub(&v, &alpha);
-                v.shrs_mut(1);
-            }
+            _dbg_step_ += 1;
+            (u, v) = Self::update_common(&mut x, u, v, &alpha, &beta);
         }
-        Self::check_invariant(&"Post_Reduce_X", &x, &y, &s, &t, &u, &v, &alpha, &beta);
+        Self::check_invariant("Post_Reduce_X", &x, &y, &s, &t, &u, &v, &alpha, &beta);
 
-        dbg_step = 0;
+        _dbg_step_ = 0;
         while x.ne(&y) {
             if y.even() {
-                y.shrs_mut(1);
                 // Note: since y is even, the following holds:
                 // (i) if s, t are both odd then so are alpha, beta
                 // (ii) if s is odd and t even then alpha must be even, so beta is odd.
                 // (iii) if t is odd and s even then beta must be even, so alpha is odd.
                 // so for each of (i), (ii) and (iii) (s + beta) and (t - alpha) are even.
-                if s.even() && t.even() {
-                    s.shrs_mut(1);
-                    t.shrs_mut(1);
-                } else {
-                    s = Self::isum_cx(&s, &beta);
-                    s.shrs_mut(1);
-                    t = Self::isub(&t, &alpha);
-                    t.shrs_mut(1);
-                }
+                (s, t) = Self::update_common(&mut y, s, t, &alpha, &beta);
             } else if y.lt(&x) {
                 std::mem::swap(&mut x, &mut y);
                 std::mem::swap(&mut u, &mut s);
@@ -97,13 +94,13 @@ impl Int {
                 s = Self::isub(&s, &u);
                 t = Self::isub(&t, &v);
             }
-            dbg_step += 1;
-            Self::check_invariant(&format!("Step {}", dbg_step), &x, &y, &s, &t, &u, &v, &alpha, &beta);
+            _dbg_step_ += 1;
+            Self::check_invariant(&format!("Step {}", _dbg_step_), &x, &y, &s, &t, &u, &v, &alpha, &beta);
         }
         x = x.compact();
-        log::info!("[{dbg_step} steps]. answer = {sr} * {x:?}");
+        log::info!("[{_dbg_step_} steps]. answer = {sr} * {x:?}");
         let gcd = x.mul_digit(sr).compact();
-        assert_eq!(gcd, Int::isum_cx(&a.mul(&s), &b.mul(&t)));
+        assert_eq!(gcd, a.mul(&s).sum(&b.mul(&t)));
         (gcd, s, t)
     }
 }
@@ -146,7 +143,7 @@ mod xb_gcd_tests {
         for case in cases {
             let (gcd, s, t) = Int::xb_gcd(&case.0, &case.1);
             assert_eq!(gcd.mag, case.2);
-            assert_eq!(gcd, Int::isum_cx(&case.0.mul(&s), &case.1.mul(&t)));
+            assert_eq!(gcd, case.0.mul(&s).sum(&case.1.mul(&t)));
         }
     }
 }

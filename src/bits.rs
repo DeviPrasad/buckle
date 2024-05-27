@@ -14,7 +14,6 @@
     limitations under the License.
 */
 
-#[allow(unused_variables)]
 use crate::Digit;
 use crate::U128;
 
@@ -64,7 +63,6 @@ pub fn add128_64(x: u128, y: u64) -> u128 {
 pub fn add64(x: u64, y: u64) -> u64 {
     x.overflowing_add(y).0
 }
-
 
 pub fn sub128c(x: u128, y: u128) -> (u128, u32) {
     let t = x.overflowing_sub(y);
@@ -153,8 +151,8 @@ pub fn div64_rem64(hi: Digit, lo: Digit, divisor: Digit) -> (Digit, Digit) {
             break
         }
     }
-    return (add64(shl64(q_hat_1, 32), q_hat_0),
-            (sub64(add64(shl64(un21, 32), ln32_0), mul64_64(q_hat_0, dn64))) >> s)
+    (add64(shl64(q_hat_1, 32), q_hat_0),
+     (sub64(add64(shl64(un21, 32), ln32_0), mul64_64(q_hat_0, dn64))) >> s)
 }
 
 // count of leading zeroes.

@@ -14,10 +14,6 @@
     limitations under the License.
 */
 
-//#[allow(unused_variables)]
-#[allow(unused_labels)]
-#[allow(dead_code)]
-
 use std::io::Write;
 use chrono::Local;
 use env_logger::Builder;

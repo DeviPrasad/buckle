@@ -40,7 +40,7 @@ impl PartialEq<Self> for Int {
     fn eq(&self, n2: &Self) -> bool {
         self.valid();
         n2.valid();
-        self.compare_abs(&n2).2 == 0
+        self.compare_abs(n2).2 == 0
     }
 }
 
@@ -48,7 +48,7 @@ impl PartialOrd for Int {
     fn partial_cmp(&self, n2: &Self) -> Option<Ordering> {
         self.valid();
         n2.valid();
-        let (_g, _l, ord) = self.compare_abs(&n2);
+        let (_g, _l, ord) = self.compare_abs(n2);
         match ord {
             0 => Some(Ordering::Equal),
             1 => Some(Ordering::Greater),
@@ -103,7 +103,7 @@ impl Int {
 
     #[inline]
     fn check_len(cb: u32) {
-        assert!(cb >= Int::BIT_WIDTH_MIN && cb <= Int::BIT_WIDTH_MAX, "Int::check_len - bad bit length");
+        assert!((Int::BIT_WIDTH_MIN..=Int::BIT_WIDTH_MAX).contains(&cb), "Int::check_len - bad bit length");
     }
 
     #[inline]
@@ -117,11 +117,9 @@ impl Int {
             assert!(self.sign == 0 || self.sign == 1 || self.sign == -1, "Int::check_invariant - invalid sign");
             assert!((self.sign == 0 && (pos_lnzd == -1 && pos_lnzb == -1)) ||
                         (self.sign != 0
-                            && (pos_lnzb >= 0 && pos_lnzb < 64)
-                            && (pos_lnzd >= 0 && pos_lnzd <= self.mag.len() as i32 - 1)),
+                            && (0..64).contains(&pos_lnzb)
+                            && (pos_lnzd >= 0 && pos_lnzd < self.mag.len() as i32)),
                     "Int::check_invariant - invalid sign, lnzd, or lnzb values");
-            assert_eq!(pos_lnzd, pos_lnzd, "Int::check_invariant - bad pos_lnzd value");
-            assert_eq!(pos_lnzb, pos_lnzb, "Int::check_invariant - bad pos_lnzb value");
         }
     }
 
@@ -137,9 +135,8 @@ impl Int {
 
     #[inline]
     fn width_of(bit_len: u32) -> u32 {
-        assert!(bit_len >= Int::BIT_WIDTH_MIN && bit_len <= Int::BIT_WIDTH_MAX, "width_of - bad bit length ({bit_len})");
-        return
-            bit_len / Digit::BITS +
+        assert!((Int::BIT_WIDTH_MIN..=Int::BIT_WIDTH_MAX).contains(&bit_len), "width_of - bad bit length ({bit_len})");
+        bit_len / Digit::BITS +
                 match bit_len % Digit::BITS {
                     0 => 0,
                     _ => 1
@@ -253,7 +250,7 @@ impl Int {
 
     pub fn from_le_digits_vec(digits: Vec<Digit>) -> Self {
         #[cfg(any(debug_assertions, release_test))]
-        assert!(digits.len() > 0 && digits.len() <= Int::DIGITS_MAX as usize);
+        assert!(!digits.is_empty() && digits.len() <= Int::DIGITS_MAX as usize);
         let mut res = Int {
             cb: Self::bit_width_for(digits.len() as u32),
             sign: 1,
@@ -283,15 +280,13 @@ impl Int {
             for (dst, src) in lm.iter_mut().zip(&self.mag[0..]) {
                 *dst = *src;
             }
-            let larger_nat = Int::from_parts(new_len, lm);
-            larger_nat
+            Int::from_parts(new_len, lm)
         } else {
             // shrink the size of the magnitude
             let mut sm = vec![0; new_size];
             // 'copy_from_slice' panics if the source and destination lengths are not equal
             sm.copy_from_slice(&self.mag[0..new_size]);
-            let smaller_nat = Int::from_parts(new_len, sm);
-            smaller_nat
+            Int::from_parts(new_len, sm)
         }
     }
 
@@ -443,7 +438,7 @@ impl Int {
     }
 
     fn min(&self, n2: &Self) -> Int {
-        if self.lt(&n2) {
+        if self.lt(n2) {
             self.clone()
         } else {
             n2.clone()
@@ -451,7 +446,7 @@ impl Int {
     }
 
     fn max(&self, n2: &Int) -> Int {
-        if self.gt(&n2) {
+        if self.gt(n2) {
             self.clone()
         } else {
             n2.clone()
@@ -465,30 +460,28 @@ impl Int {
             (self, t, 1)
         } else if pos_lnzd < t_pos_lnzd {
             (t, self, -1)
+        } else if pos_lnzb > t_pos_lnzb {
+            (self, t, 1)
+        } else if pos_lnzb < t_pos_lnzb {
+            (t, self, -1)
         } else {
-            if pos_lnzb > t_pos_lnzb {
-                (self, t, 1)
-            } else if pos_lnzb < t_pos_lnzb {
-                (t, self, -1)
-            } else {
-                if pos_lnzd >= 0 {
-                    // when the leading positions are all same, scan from the most-significant digit.
-                    for k in (0..=pos_lnzd).rev() {
-                        let i = k as usize;
-                        if self.mag[i] < t.mag[i] {
-                            return (t, self, -1)
-                        } else if self.mag[i] > t.mag[i] {
-                            return (self, t, 1)
-                        }
+            if pos_lnzd >= 0 {
+                // when the leading positions are all same, scan from the most-significant digit.
+                for k in (0..=pos_lnzd).rev() {
+                    let i = k as usize;
+                    if self.mag[i].lt(&t.mag[i]) {
+                        return (t, self, -1)
+                    } else if self.mag[i].gt(&t.mag[i]) {
+                        return (self, t, 1)
                     }
                 }
-                (self, t, 0)
             }
+            (self, t, 0)
         }
     }
 
     fn do_add(n1: &Int, n2: &Int) -> (Int, Digit) {
-        let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
+        let (n1_iter, n2_iter, len) = Self::width_equalizer(n1, n2);
 
         let mut carry: Digit = 0;
         let mut mag = vec![0; len as usize];
@@ -499,46 +492,37 @@ impl Int {
         (res, carry)
     }
 
-    pub fn add(&self, n2: &Int) -> (Int, Digit) {
+    pub fn add(&self, n2: &Int) -> Int {
         self.valid();
         n2.valid();
 
-        let (mut sum, c) = Self::do_add(self, n2);
+        let (mut sum, _) = Self::do_add(self, n2);
         sum.set_sign(1);
-        (sum, c)
+        sum
     }
 
-    pub fn sum(&self, n2: &Int) -> Int {
-        self.add(&n2).0
-    }
-
-    pub fn isum_cx(a: &Int, b: &Int) -> Int {
+    pub fn sum(&self, b: &Int) -> Int {
+        let a = self;
         if a.positive() {
             if b.positive() { // a + b
-                let mut r = a.sum_xc(&b);
+                let mut r = a.do_sum(b);
                 r.assign_positive();
                 r
             } else { // a - b
-                a.subtract(&b)
+                a.subtract(b)
             }
-        } else {
-            if b.negative() {  // -a - b = -(a + b)
-                let mut r = a.sum_xc(&b);
-                r.assign_negative();
-                r
-            } else { // -a + b = b - a
-                b.subtract(&a)
-            }
+        } else if b.negative() {  // -a - b = -(a + b)
+            let mut r = a.do_sum(b);
+            r.assign_negative();
+            r
+        } else { // -a + b = b - a
+            b.subtract(a)
         }
     }
 
-    // carry is absorbed as a digit in the sum.
-    pub fn sum_xc(&self, n2: &Int) -> Int {
-        Self::do_sum_xc(self, &n2)
-    }
-
-    fn do_sum_xc(n1: &Int, n2: &Int) -> Int {
-        let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
+    fn do_sum(&self, n2: &Int) -> Int {
+        let n1 = self;
+        let (n1_iter, n2_iter, len) = Self::width_equalizer(n1, n2);
 
         let mut carry: Digit = 0;
         let mut mag = vec![0; len as usize];
@@ -548,19 +532,18 @@ impl Int {
         if carry > 0 {
             mag.push(carry);
         }
-        let res = Int::from_le_digits_vec(mag);
-        res
+        Int::from_le_digits_vec(mag)
     }
 
     fn width_equalizer<'a>(n1: &'a Int, n2: &'a Int) -> (impl Iterator<Item=&'a Digit>,
                                                          impl Iterator<Item=&'a Digit>,
                                                          u32) {
         let (l1, l2) = (n1.width(), n2.width());
-        if l1 > l2 {
+        if l1.gt(&l2) {
             (n1.mag.iter().chain(iter::repeat(&0).take(0)),
              n2.mag.iter().chain(iter::repeat(&0).take((l1 - l2) as usize)),
              l1)
-        } else if l2 > l1 {
+        } else if l2.gt(&l1) {
             (n1.mag.iter().chain(iter::repeat(&0).take((l2 - l1) as usize)),
              n2.mag.iter().chain(iter::repeat(&0).take(0)),
              l2)
@@ -572,7 +555,7 @@ impl Int {
     }
 
     fn do_sub(n1: &Int, n2: &Int) -> (Vec<Digit>, /* borrow */ Digit) {
-        let (n1_iter, n2_iter, len) = Self::width_equalizer(&n1, &n2);
+        let (n1_iter, n2_iter, len) = Self::width_equalizer(n1, n2);
 
         let mut borrow: Digit = 0;
         let mut mag = vec![0; len as usize];
@@ -582,24 +565,29 @@ impl Int {
         (mag, borrow)
     }
 
-    pub fn sub(&self, n2: &Int) -> (Int, i32) {
+    // Calculate the difference between self and n2, and provide the borrow, if any.
+    // Note: borrow is either 0 or 1. See 'diff' for fining the sign of the difference.
+    pub fn sub(&self, n2: &Int) -> (Int, u64) {
         self.valid();
         n2.valid();
 
-        let (_l, _, ord) = self.compare_abs(&n2);
-        let (mag, borrow) = Self::do_sub(&self, &n2);
+        let (_, _, ord) = self.compare_abs(n2);
+        let (mag, borrow) = Self::do_sub(self, n2);
         assert!(borrow == 0 || borrow == 1);
         let mut res = Int::from_le_digits_vec(mag);
         res.set_sign(ord);
-        (res, -(borrow as i32))
+        (res, borrow)
     }
 
-    // subtract two magnitudes. Indicate the sign too.
-    pub fn sub_abs(&self, n2: &Int) -> (Int, i32) {
+    // Calculate the absolute difference between two magnitudes.
+    // Return the sign of the difference as -1, 0, and 1, if the
+    // first argument is less than, equal to, or more than the second, respectively.
+    // Note: sign and borrow are two different ideas. See 'sub' for obtaining the borrow.
+    pub fn diff(&self, n2: &Int) -> (Int, i32) {
         self.valid();
         n2.valid();
 
-        let (l, s, ord) = self.compare_abs(&n2);
+        let (l, s, ord) = self.compare_abs(n2);
         let (mag, _) = Self::do_sub(l, s);
         let mut res = Int::from_le_digits_vec(mag);
         res.set_sign(ord);
@@ -607,26 +595,25 @@ impl Int {
     }
 
     pub fn subtract(&self, n2: &Int) -> Int {
-        self.sub_abs(&n2).0
+        self.diff(n2).0
     }
 
     pub fn isub(a: &Int, b: &Int) -> Int {
         if a.negative() {
             if b.positive() { // -a - b = -(a + b)
-                let mut r = a.sum_xc(&b);
+                let mut r = a.do_sum(b);
                 r.assign_negative();
                 r
             } else { // -a - (-b) = -a + b = b - a
-                b.subtract(&a)
+                b.subtract(a)
             }
         } else { // a is positive
             if b.negative() { // a - (-b) = (a + b)
-                let mut r = a.sum_xc(&b);
+                let mut r = a.do_sum(b);
                 r.assign_positive();
                 r
             } else { // a - b
-                let r = a.subtract(&b);
-                r
+                a.subtract(b)
             }
         }
     }
@@ -651,14 +638,14 @@ impl Int {
     // school-book multiplication
 // TODO: optimize when at least one of the arguments is 2^N
     pub fn mul(&self, n2: &Int) -> Int {
-        let mut prod = Self::multiply_base_case(&self, n2);
+        let mut prod = Self::multiply_base_case(self, n2);
         prod.sign = self.sign * n2.sign;
         prod.fix_sign();
         prod
     }
 
     pub fn mul_karatsuba(&self, n2: &Int) -> Int {
-        let mut prod = Self::multiply_karatsuba(&self, n2);
+        let mut prod = Self::multiply_karatsuba(self, n2);
         prod.truncate(self.width() + n2.width());
         prod.sign = self.sign * n2.sign;
         prod.fix_sign();
@@ -718,20 +705,20 @@ impl Int {
         let c0 = a0.multiply(&b0);
         let c1 = a1.multiply(&b1);
 
-        let (c2_a, sign_a) = Int::sub_abs(&a0, &a1);
-        let (c2_b, sign_b) = Int::sub_abs(&b0, &b1);
+        let (c2_a, sign_a) = Int::diff(&a0, &a1);
+        let (c2_b, sign_b) = Int::diff(&b0, &b1);
         let c2: Int = c2_a.multiply(&c2_b);
 
         let base_pow_k = Int::new_digit(64 * k + 1, 0).set_bit_mut(64 * k);
         let base_pow_2k = Int::new_digit(64 * 2 * k + 1, 0).set_bit_mut(64 * 2 * k);
         let c1_mul_base_pow_2k = c1.mul(&base_pow_2k);
-        let c0_plus_c1 = c0.sum(&c1);
+        let c0_plus_c1 = c0.add(&c1);
         let prod = if sign_a * sign_b >= 0 {
-            let (c0_plus_c1_minus_c2, _) = c0_plus_c1.sub_abs(&c2);
-            c0.sum(&c0_plus_c1_minus_c2.mul(&base_pow_k)).sum(&c1_mul_base_pow_2k)
+            let (c0_plus_c1_minus_c2, _) = c0_plus_c1.diff(&c2);
+            c0.add(&c0_plus_c1_minus_c2.mul(&base_pow_k)).add(&c1_mul_base_pow_2k)
         } else {
-            let c0_plus_c1_plus_c2 = c0_plus_c1.sum(&c2);
-            c0.sum(&c0_plus_c1_plus_c2.multiply(&base_pow_k)).sum(&c1_mul_base_pow_2k)
+            let c0_plus_c1_plus_c2 = c0_plus_c1.add(&c2);
+            c0.add(&c0_plus_c1_plus_c2.multiply(&base_pow_k)).add(&c1_mul_base_pow_2k)
         };
         prod.valid();
         prod
@@ -744,9 +731,9 @@ impl Int {
         let xl = n1.width();
         let yl = n2.width();
         let mut prod = if xl < Int::KARATSUBA_MUL_THRESHOLD || yl < Int::KARATSUBA_MUL_THRESHOLD {
-            Self::multiply_base_case(&n1, &n2)
+            Self::multiply_base_case(n1, n2)
         } else {
-            Self::multiply_karatsuba(&n1, &n2)
+            Self::multiply_karatsuba(n1, n2)
         };
         prod.truncate(xl + yl);
         prod
@@ -767,8 +754,8 @@ impl Int {
     }
 
     pub fn remainder(&self, divisor: &Int, quotient: &Int) -> Int {
-        let prod = divisor.mul(&quotient);
-        let (r, _) = self.sub_abs(&prod);
+        let prod = divisor.mul(quotient);
+        let (r, _) = self.diff(&prod);
         r.compact()
     }
 
@@ -809,8 +796,8 @@ impl Int {
             } else {
                 let m = dividend.width(); // count of digits in the dividend
                 let n = divisor.width(); // count of digits in the divisor
-                assert!(m > 2 && n >= 2 && m >= n + 1);
-                let (mut q, r) = dividend.div_knuth(&divisor);
+                assert!(m > 2 && n >= 2);
+                let (mut q, r) = dividend.div_knuth(divisor);
                 q.fix_sign();
                 q.compact_mut();
                 (q, r)
@@ -837,7 +824,7 @@ impl Int {
         (q, r)
     }
 
-    fn _normalize_common_(mut wn: Vec<Digit>, w: &Vec<Digit>, s: u32, m: u32) -> Int {
+    fn _normalize_common_(mut wn: Vec<Digit>, w: &[Digit], s: u32, m: u32) -> Int {
         if s > 0 {
             for k in (1..m).rev() {
                 let i = k as usize;
@@ -946,13 +933,13 @@ impl Int {
                     //log::info!("\tD6. add-back");
                     quotient.dec(j); // decrease quotient[j] by 1
                     let un_j_n = un.window(j, vnw); // u(j+n) u(j+n-1) ...u(j) where n = vnw
-                    let un_j_n = un_j_n.add(&vn).0; // we must ignore the carry
+                    let un_j_n = un_j_n.add(&vn); // we must ignore the carry
                     un.window_update(j, vnw, &un_j_n);
                 }
             }
         }
         quotient.valid();
-        let remainder = dividend.remainder(&divisor, &quotient);
+        let remainder = dividend.remainder(divisor, &quotient);
         (quotient, remainder)
     }
 
@@ -1089,7 +1076,7 @@ impl Int {
             let c = min(count, Digit::BITS);
             for i in 0..dc-1 {
                 // we need to be careful about the case where c == 64.
-                t.mag[i] = ((t.mag[i] >> (c - 1)) >> 1) | (t.mag[i + 1] << Digit::BITS - c);
+                t.mag[i] = ((t.mag[i] >> (c - 1)) >> 1) | (t.mag[i + 1] << (Digit::BITS - c));
             }
             t.mag[dc - 1] = (t.mag[dc - 1] >> (c - 1)) >> 1;
             count -= c;
@@ -1234,6 +1221,7 @@ impl Int {
 
 #[cfg(test)]
 mod int_test {
+    use std::cmp::Ordering;
     use crate::hex::le_vec_u64;
     use crate::init_logger;
     use crate::int::{Digit, Int, IntStrCase, IntStrPadding};
@@ -1446,8 +1434,10 @@ mod int_test {
         assert!(n1 < n2);
         assert!(n2 > n1);
         assert!(n2 > n0);
-        assert!(!(n2 > n2) && !(n2 < n2));
-        assert!(!(n2 > n65525));
+        // assert!(!(n2 > n2) && !(n2 < n2));
+        assert_eq!(n2.partial_cmp(&n2), Some(Ordering::Equal));
+        // assert!(!(n2 > n65525));
+        assert_eq!(n2.partial_cmp(&n65525), Some(Ordering::Less));
         assert!(n2 < n65525);
         assert!(n65525 > n2);
     }
@@ -1833,32 +1823,32 @@ mod int_test {
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
 
         let (d, s) = zero_256.sub(&x);
-        assert_eq!(s, -1);
+        assert_eq!(s, 1);
         assert_eq!(d.mag, [-100_i64 as u64, -44_i64 as u64, -2_i64 as u64, -3_i64 as u64, -(u64::MAX as i64 + 1) as u64]);
 
-        let (d, s) = zero_256.sub_abs(&x);
+        let (d, s) = zero_256.diff(&x);
         assert_eq!(s, -1);
         assert_eq!(d.sign, -1);
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
 
-        let (d, s) = x.sub(&y);
-        assert_eq!((s, d.sign), (-1, -1));
+        let (d, b) = x.sub(&y);
+        assert_eq!((d.sign, b), (-1, 1));
         assert_eq!(d.mag, [-100_i64 as u64, -1_i64 as u64, -1_i64 as u64, 0, 0, -1_i64 as u64]);
 
-        let (d, s) = x.sub_abs(&zero_256);
+        let (d, s) = x.diff(&zero_256);
         assert_eq!(s, 1);
         assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 43, 1, 2, u64::MAX]);
 
-        assert_eq!(x.sub_abs(&y).0.mag, y.sub_abs(&x).0.mag);
-        assert_eq!(x.sub_abs(&y).1, -y.sub_abs(&x).1);
+        assert_eq!(x.diff(&y).0.mag, y.diff(&x).0.mag);
+        assert_eq!(x.diff(&y).1, -y.diff(&x).1);
 
         let (d, s) = y.sub(&x);
         assert_eq!(s, 0);
         assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 0, 0, -1_i64 as u64, u64::MAX, 0]);
 
-        let (d, s) = y.sub_abs(&x);
+        let (d, s) = y.diff(&x);
         assert_eq!(s, 1);
         assert_eq!(d.sign, 1);
         assert_eq!(d.mag, [100, 0, 0, -1_i64 as u64, u64::MAX, 0]);
