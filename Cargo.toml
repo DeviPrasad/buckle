@@ -8,3 +8,7 @@ edition = "2021"
 env_logger = "^0.11"
 log = "^0.4"
 chrono = { version = "^0.4" }
+bytes = { version = "^1.6.0" }
+# heapless-bytes = { version = "^0.3" }
+heapless = {  version = "^0.8" }
+tokio = { version = "1.38.0", features = ["io-util", "net", "rt", "rt-multi-thread", "macros"] }

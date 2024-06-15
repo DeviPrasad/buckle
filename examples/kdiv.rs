@@ -34,14 +34,14 @@ mod kd16 {
 // 's' must be a str of at most 16 hex chars; it cannot be empty.
 // panics on bad input.
     fn to_u16(s: &[u8]) -> D16 {
-        assert!(s.len() > 0 && s.len() <= 4);
+        assert!(!s.is_empty() && s.len() <= 4);
         let mut n: u16 = 0;
         let mut k: u16 = 0;
         for &hd in s.iter().rev() {
             match buckle::hex::val(hd) {
                 Ok(v) => {
                     // log::info!("to_u16 s = {s:?} n = {n} v = {v}, k = {k}, p = {}", 1u32 << k*4);
-                    n += v as u16 * (1_u16 << k * 4);
+                    n += v as u16 * (1_u16 << (k * 4));
                     k += 1;
                 }
                 Err(c) => panic!("bad hex char {}", c)
@@ -53,7 +53,7 @@ mod kd16 {
     // creates a 'big-endian' vector of u64 values.
 // may prefix the given hex str with adequate number of zeroes so the length is a multiple of 16.
     fn vec_u16(s: &str) -> Vec<D16> {
-        if !(&s[0..2] == "0x") {
+        if &s[0..2] != "0x" {
             panic!("hex string must start with '0x'; found {:#?}", s[0..2].to_ascii_lowercase());
         }
 
@@ -71,7 +71,7 @@ mod kd16 {
         let vu16: Vec<D16> =
             maybe_prefix_zeros(&s[2..])
                 .chunks(4)
-                .map(|hc| to_u16(hc))
+                .map(to_u16)
                 .collect();
 
         // #[cfg(noob)]
@@ -113,13 +113,11 @@ mod kd16 {
         (x >> (-(s as i16) & 15)) & ((-(s as i16) >> 15) as D16)
     }
 
-    pub(crate) fn d16_normalize(w: &Vec<D16>, s: u32, expand: bool) -> Vec<D16> {
+    pub(crate) fn d16_normalize(w: &[D16], s: u32, expand: bool) -> Vec<D16> {
         let mut wn = vec![0; w.len() + expand as usize];
         let m = w.len();
-        if expand {
-            if s > 0 {
-                wn[m] = w[m - 1] >> (D16::BITS - s);
-            }
+        if expand && s > 0 {
+            wn[m] = w[m - 1] >> (D16::BITS - s);
         }
         for i in (1..m).rev() {
             if s > 0 {
@@ -162,26 +160,24 @@ mod kd16 {
         (t.0, t.1 as u32)
     }
 
-    pub(crate) fn magnitude(digits: &Vec<u16>) -> u128 {
+    pub(crate) fn magnitude(digits: &[u16]) -> u128 {
         let mut v = 0_u128;
-        let mut k = 0_u128;
-        for &d in digits {
+        for (k, &d) in digits.iter().enumerate() {
             v += (d as u128) * (1 << (k * 16));
-            k += 1;
         }
         v
     }
 
     const BASE: u32 = 1 << 16;
 
-    pub(crate) fn div(u: &Vec<D16>, v: &Vec<D16>) -> Vec<D16> {
+    pub(crate) fn div(u: &[D16], v: &[D16]) -> Vec<D16> {
         let m = u.len();
         let n = v.len();
         assert!(n > 1 && v[n - 1] > 0 && m >= n);
         let s = d16_nlz(v[n - 1]);
         assert!(s <= 15);
-        let vn = d16_normalize(&v, s, false);
-        let mut un = d16_normalize(&u, s, true);
+        let vn = d16_normalize(v, s, false);
+        let mut un = d16_normalize(u, s, true);
         let mut q: u32;
         let mut quotient = vec![0u16; m - n + 1];
 
@@ -232,7 +228,7 @@ mod kd16 {
                 // add back
                 if t < 0 {
                     // log::info!("\tD6. add-back");
-                    quotient[j] = quotient[j] - 1;
+                    quotient[j] -= 1;
                     let mut k: u16 = 0;
                     for i in 0..n {
                         // let mut t: u32 = (un[i + j] as u32 + vn[i] as u32) + k as u32;
