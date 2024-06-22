@@ -22,7 +22,7 @@ use tokio::net::{TcpSocket, TcpStream};
 
 use buckle::init_logger;
 
-use crate::tls3::{AlertDesc, CipherSuite, ClientHelloHandshake, Extension, ServerHelloHandshake, ServerHelloMsgReader};
+use crate::tls3::{AlertDesc, ApplicationDataMsg, ChangeCipherSpecMsg, CipherSuite, ClientHelloHandshake, Extension, RecErr, ServerHelloHandshake, ServerHelloMsgReader};
 
 #[allow(dead_code)]
 pub mod tls3 {
@@ -289,7 +289,7 @@ pub mod tls3 {
                 assert!(i <= ext_len);
             }
             assert_eq!(i, ext_len);
-            Ok((extensions, ext_len))
+            Ok((extensions, ext_len + 2))
         }
 
         fn size(extensions: &[Extension]) -> usize {
@@ -847,6 +847,48 @@ pub mod tls3 {
         }
     }
 
+    pub struct ChangeCipherSpecMsg(());
+
+    impl ChangeCipherSpecMsg {
+        pub fn deserialize(bytes: &[u8]) -> Result<(Option<Self>, usize), RecErr> {
+            if bytes[0] != ContentType::ChangeCipherSpec as u8 {
+                return Ok((None, 0))
+            }
+            if bytes.len() < 6 {
+                return Err(RecErr::BadInput)
+            }
+            if (bytes[1], bytes[2]) != (0x3, 0x3) {
+                return Err(RecErr::UnsupportedVersion)
+            }
+            if (bytes[3], bytes[4], bytes[5]) != (0x0, 0x1, 0x1) {
+                return Err(RecErr::InvalidCipherSpecChange)
+            }
+            log::info!("ChangeCipherSpecMsg - Ok");
+            Ok((Some(ChangeCipherSpecMsg(())), 6))
+        }
+    }
+
+    pub struct ApplicationDataMsg {}
+
+    impl ApplicationDataMsg {
+        pub fn deserialize(bytes: &[u8]) -> Result<(Option<Self>, usize), RecErr> {
+            if bytes.is_empty() || bytes.len() < 6 {
+                Err(RecErr::BadInput)
+            } else if bytes[0] != ContentType::ApplicationData as u8 {
+                log::info!("ApplicationDataMsg::deserialize - nothing to do.");
+                Ok((None, 0))
+            } else if (bytes[1], bytes[2]) != (0x3, 0x3) {
+                Err(RecErr::UnsupportedVersion)
+            } else {
+                // log::info!("ApplicationDataMsg prefix_slice = {:?}", &bytes[0..8]);
+                let data_len = ((bytes[3] as usize) << 8) | (bytes[4] as usize);
+                log::info!("application data len = {data_len}/{}, data(pre16): {:?}", bytes.len(),  &bytes[0..16]);
+                Ok((None, 5 + data_len))
+                //Ok((None, data_len))
+            }
+        }
+    }
+
     #[repr(u8)]
     #[derive(Clone, Debug)]
     pub enum RecErr {
@@ -870,10 +912,88 @@ pub mod tls3 {
 
         HandshakeType = 129,
         UnknownAlertDesc = 140,
+        InvalidCipherSpecChange = 145,
+
+        BadNetworkAddress = 165,
+        TlsConnection = 166,
+        TlsChannelReadiness = 167,
+        StreamError = 168,
+
         TooBig = 251,
+        NotImpl = 253,
         BadInput = 255,
     }
 }
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct TlsChannel {
+    server: String,
+    stream: TcpStream,
+}
+
+#[allow(dead_code)]
+impl TlsChannel {
+    pub async fn new(server: &str) -> Result<TlsChannel, RecErr> {
+        let server_sock_addresses = server.to_socket_addrs()
+                                          .map_err(|_| RecErr::BadNetworkAddress)?;
+        for serv_sock_addr in server_sock_addresses {
+            let socket = TcpSocket::new_v4().map_err(|_| RecErr::TlsConnection)?;
+            if let Ok(sock_stream) = socket.connect(serv_sock_addr).await {
+                return Ok(TlsChannel {
+                    server: server.to_owned(),
+                    stream: sock_stream,
+                })
+            }
+        }
+        Err(RecErr::TlsConnection)
+    }
+
+    pub async fn readable(&self) -> Result<(), RecErr> {
+        self.stream.readable().await
+            .map_err(|_| RecErr::TlsChannelReadiness)
+            .map(|_| ())
+    }
+
+    pub async fn read(&self, buf: &mut [u8]) -> Result<usize, RecErr> {
+        let mut serv_resp_len: usize = 0;
+        loop {
+            let _ = self.stream.readable()
+                        .await
+                        .map_err(|_| RecErr::TlsChannelReadiness);
+            return match self.stream.try_read(&mut buf[serv_resp_len..]) {
+                Ok(0) => {
+                    Ok(serv_resp_len)
+                }
+                Ok(n) => {
+                    serv_resp_len += n;
+                    continue;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    log::error!("error: {e:#?}");
+                    Err(RecErr::StreamError)
+                }
+            }
+        }
+    }
+
+    pub async fn write(&self, buf: &[u8]) -> Result<usize, RecErr> {
+        let _ = self.stream.writable().await;
+        self.stream.try_write(&buf)
+            .map_err(|_| RecErr::TlsChannelReadiness)
+    }
+
+    pub async fn shutdown(&mut self) -> Result<(), RecErr> {
+        self.stream.shutdown()
+            .await
+            .map_err(|_| RecErr::TlsChannelReadiness)
+    }
+}
+
+pub fn tls_channel_read() {}
 
 // use the following command to run tests defined in the lib, and those in examples.
 // RUSTFLAGS="--cfg=release_test -Adead_code -Aunused" cargo test --examples --release -- --show-output
@@ -960,19 +1080,11 @@ async fn main() -> io::Result<()> {
     init_logger(true);
     for (server_name, server) in tls13_servers {
         log::info!("");
-        log::info!("{server}");
-        let server_sock_addresses = server.to_socket_addrs()?;
-        let mut serv_stream: Option<TcpStream> = None;
-        for serv_sock_addr in server_sock_addresses {
-            let socket = TcpSocket::new_v4()?;
-            if let Ok(sock_stream) = socket.connect(serv_sock_addr).await {
-                serv_stream = Some(sock_stream);
-                break;
-            }
-        }
-        if let Some(mut tls_stream) = serv_stream {
-            tls_stream.writable().await?;
-
+        let serv_stream = TlsChannel::new(server).await;
+        log::info!("Trying {server}");
+        if let Ok(mut chan) = serv_stream {
+            log::info!("Connected {server}");
+            chan.stream.writable().await?;
             let random: Vec<u8> = (64..(64 + 32)).collect();
             {
                 let res = ClientHelloHandshake::new(random.try_into().unwrap(),
@@ -996,51 +1108,50 @@ async fn main() -> io::Result<()> {
                 let mut bytes: [u8; 1024] = [0; 1024];
                 bytes.fill(0);
                 let ls = ch.serialize(&mut bytes[0..]).unwrap();
-                log::info!("{:?}", &bytes[0..ls+1]);
-                let res = tls_stream.try_write(&bytes[0..ls]);
+                // log::info!("{:?}", &bytes[0..ls+1]);
+                let res = chan.write(&bytes[0..ls]).await;
                 assert!(res.is_ok());
                 let n = res.unwrap();
                 log::info!("sending {ls} bytes to {server_name}; wrote {n} bytes");
             }
 
             {
-                let mut msg_buf = [0; 4096];
+                let mut msg_buf = [0; 8182];
                 msg_buf.fill(0);
-                let mut serv_resp_len: usize = 0;
-                let mut ok = true;
-                loop {
-                    tls_stream.readable().await?;
-                    match tls_stream.try_read(&mut msg_buf[serv_resp_len..]) {
-                        Ok(0) => {
-                            // log::error!("stream reading complete.");
-                            break
-                        }
-                        Ok(n) => {
-                            serv_resp_len += n;
-                            // log::info!("[{server:}]: read {n} bytes. total = {serv_resp_len}");
-                            continue;
-                        }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            break;
-                        }
-                        Err(e) => {
-                            ok = false;
-                            log::error!("error: {e:#?}");
-                            break
-                        }
-                    }
-                };
-                assert!(ok);
+                let res = chan.read(msg_buf.as_mut_slice()).await;
+                assert!(res.is_ok());
+                let serv_resp_len: usize = res.unwrap();
                 if [0x16, 0x03, 0x03] == msg_buf[0..3] {
                     assert_eq!(msg_buf[5], 0x2); // server_hello
                     assert_eq!(msg_buf[9..11], [0x3, 0x3]); // legacy_tls_version
 
                     let mut shm_reader = ServerHelloMsgReader::new(&msg_buf);
                     if let Ok(shm) = ServerHelloHandshake::deserialize(&mut shm_reader) {
-                        log::info!("\tSH read {serv_resp_len} bytes; {shm:?}");
+                        log::info!("\tread {serv_resp_len} bytes");
+                        // log::info!("\tSH {shm:?}");
                         assert!(shm.legacy_session_id.is_none());
-                        log::info!("prefix_slice = {:?}", &msg_buf[(shm.fragment_len+5)  as usize..(shm.fragment_len+16)  as usize]);
-                        log::info!("\tfrag_len = {}, pos = {:?}", shm.fragment_len, shm_reader.pos());
+                        log::info!("\tfrag_len = {}", shm.fragment_len);
+                        let cursor = shm_reader.pos();
+                        let rcs: (Option<ChangeCipherSpecMsg>, usize) =
+                            ChangeCipherSpecMsg::deserialize(&msg_buf[cursor..serv_resp_len]).expect("change_cipher_spec");
+                        assert!((rcs.0.is_none() && rcs.1 == 0) || (rcs.0.is_some() && rcs.1 == 6));
+                        let mut app_data_start = cursor + rcs.1;
+                        while app_data_start < serv_resp_len {
+                            let adm = ApplicationDataMsg::deserialize(&msg_buf[app_data_start..serv_resp_len]).expect("application_data message");
+                            if adm.1 > 5 {
+                                app_data_start += adm.1;
+                            } else {
+                                break;
+                            }
+                        }
+                        assert_eq!(serv_resp_len, app_data_start);
+                        log::info!("Cursor pos: {app_data_start}/{serv_resp_len}");
+                        log::info!("");
+                        msg_buf.fill(0);
+                        let res = chan.read(msg_buf.as_mut_slice()).await;
+                        assert!(res.is_ok());
+                        let serv_resp_len: usize = res.unwrap();
+                        log::info!("read {serv_resp_len} from {server} again!");
                     }
                     // assert_eq!(serv_hello_enc_ext[shm_reader.pos()], 8);
                 } else if [0x15, 0x03, 0x03] == msg_buf[0..3] {
@@ -1072,8 +1183,7 @@ async fn main() -> io::Result<()> {
                     panic!("Fatal Error: No response from {server_name} for client hello! Quitting...");
                 }
             }
-
-            tls_stream.shutdown().await?;
+            let _ = chan.shutdown().await;
         }
     }
     Ok(())
