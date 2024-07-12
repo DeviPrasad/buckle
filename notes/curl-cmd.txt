@@ -1,0 +1,4 @@
+
+curl --verbose --tls-max 1.3 --tls13-ciphers TLS_AES_128_GCM_SHA256 --ciphers TLS_AES_128_GCM_SHA256 https://www.meta.com | head 20
+
+curl --verbose --tls-max 1.3 --tls13-ciphers TLS_AES_128_GCM_SHA256 --ciphers TLS_AES_128_GCM_SHA256 https://www.google.com

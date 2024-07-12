@@ -13,16 +13,25 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 */
-
+use std::cmp::min;
 use std::io;
 use std::net::ToSocketAddrs;
 
+use aes_gcm::{aead, AeadInPlace, Aes128Gcm, Key, KeyInit, Nonce};
+use aes_gcm::aes::Aes128Dec;
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
+use hmac::digest::consts::U32;
+use hmac::digest::generic_array::GenericArray;
+use rand_core::{OsRng, RngCore};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpSocket, TcpStream};
+use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 
 use buckle::init_logger;
 
-use crate::tls3::{AlertDesc, ApplicationDataMsg, ChangeCipherSpecMsg, CipherSuite, ClientHelloHandshake, Extension, RecErr, ServerHelloHandshake, ServerHelloMsgReader};
+use crate::tls3::{AlertDesc, ApplicationDataMsg, ChangeCipherSpecMsg, CipherSuite, ClientHelloHandshake, Extension, HandshakeType, Mutter, RecordContentType, ServerHelloHandshake, ServerHelloMsgReader};
 
 #[allow(dead_code)]
 pub mod tls3 {
@@ -32,7 +41,7 @@ pub mod tls3 {
     pub type CipherSuiteCode = (u8, u8);
 
     #[repr(u8)]
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, PartialEq)]
     pub enum CipherSuite {
         TlsAes128GcmSha256,
         TlsAes256GcmSha384,
@@ -42,7 +51,7 @@ pub mod tls3 {
     }
 
     impl TryFrom<(u8, u8)> for CipherSuite {
-        type Error = RecErr;
+        type Error = Mutter;
 
         fn try_from(value: (u8, u8)) -> Result<Self, Self::Error> {
             match value {
@@ -51,7 +60,7 @@ pub mod tls3 {
                 (0x13, 0x03) => Ok(CipherSuite::TlsChacha20Poly1305Sha256),
                 (0x13, 0x04) => Ok(CipherSuite::TlsAes128CcmSha256),
                 (0x13, 0x05) => Ok(CipherSuite::TlsAes128Ccm8Sha256),
-                _ => Err(RecErr::CipherUnsupported)
+                _ => Err(Mutter::CipherUnsupported)
             }
         }
     }
@@ -73,7 +82,7 @@ pub mod tls3 {
 
     #[repr(u8)]
     #[derive(Clone, Debug, PartialEq)]
-    pub enum ContentType {
+    pub enum RecordContentType {
         Invalid = 0,
         ChangeCipherSpec = 20,
         Alert = 21,
@@ -83,7 +92,7 @@ pub mod tls3 {
     }
 
     #[repr(u8)]
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
     pub enum HandshakeType {
         ClientHello = 1,
         ServerHello = 2,
@@ -96,7 +105,26 @@ pub mod tls3 {
         Finished = 20,
         KeyUpdate = 24,
         MessageHash = 254,
-        _Unused_ = 255
+        #[default]
+        Bad = 255
+    }
+
+    impl From<u8> for HandshakeType {
+        fn from(val: u8) -> Self {
+            match val {
+                1 => HandshakeType::ClientHello,
+                2 => HandshakeType::ServerHello,
+                4 => HandshakeType::NewSessionTicket,
+                5 => HandshakeType::EndOfEarlyData,
+                8 => HandshakeType::EncryptedExtensions,
+                11 => HandshakeType::Certificate,
+                13 => HandshakeType::CertificateRequest,
+                15 => HandshakeType::CertificateVerify,
+                20 => HandshakeType::Finished,
+                24 => HandshakeType::KeyUpdate,
+                _ => HandshakeType::Bad,
+            }
+        }
     }
 
     #[repr(u16)]
@@ -128,26 +156,62 @@ pub mod tls3 {
         PostHandshakeAuth = 49,
         SignatureAlgorithmsCert = 50,
         KeyShare = 51,
-        Bad = 65535
+        Unused = 65535
+    }
+
+    // B.3.1.4. Supported Groups Extension. page 130.
+    #[repr(u16)]
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum SupportedGroup {
+        Reserved = 0,
+        // elliptic curve groups
+        Secp256r1 = 0x0017,
+        Secp384r1 = 0x0018,
+        Secp512r1 = 0x0019,
+        X25519 = 0x001D,
+        X448 = 0x001E,
+        // finite-field groups
+        FFDHE2048 = 0x0100,
+        FFDHE3072 = 0x0101,
+        FFDHE4096 = 0x0102,
+        FFDHE6144 = 0x0103,
+        FFDHE8192 = 0x0104,
+
+        Unused = 0xFFFF,
     }
 
     #[repr(u8)]
     #[derive(Clone, Debug, PartialEq)]
     pub enum AlertDesc {
         CloseNotify = 0,
+        UnexpectedMessage = 10,
+        BadRecordMac = 20,
         RecordOverflow = 22,
         HandshakeFailure = 40,
+        BadCertificate = 42,
+        UnsupportedCertificate = 43,
+        CertificateRevoked = 44,
+        CertificateExpired = 45,
+        CertificateUnknown = 46,
+        IllegalParameter = 47,
+        UnknownCA = 48,
+        AccessDenied = 49,
         DecodeError = 50,
+        DecryptError = 51,
         ProtocolVersion = 70,
         InsufficientSecurity = 71,
         InternalError = 80,
+        UserCanceled = 90,
         MissingExtension = 109,
         UnsupportedExtension = 110,
+        UnrecognizedName = 112,
+        BadCertificateStatusResponse = 113,
+        CertificateRequired = 116,
         Bad = 255,
     }
 
     impl TryFrom<u8> for AlertDesc {
-        type Error = RecErr;
+        type Error = Mutter;
 
         fn try_from(desc: u8) -> Result<Self, Self::Error> {
             match desc {
@@ -160,7 +224,7 @@ pub mod tls3 {
                 80 => Ok(AlertDesc::InternalError),
                 109 => Ok(AlertDesc::MissingExtension),
                 110 => Ok(AlertDesc::UnsupportedExtension),
-                _ => Err(RecErr::UnknownAlertDesc),
+                _ => Err(Mutter::UnknownAlertDesc),
             }
         }
     }
@@ -174,7 +238,7 @@ pub mod tls3 {
     }
 
     impl ExtensionTypeCode {
-        fn from((u, v): (u8, u8)) -> Result<Self, RecErr> {
+        fn from((u, v): (u8, u8)) -> Result<Self, Mutter> {
             match (u, v) {
                 (0, 0) => Ok(Self::ServerName),
                 (0, 10) => Ok(Self::SupportedGroups),
@@ -190,7 +254,7 @@ pub mod tls3 {
                 (0, 51) => Ok(Self::KeyShare),
                 _ => {
                     log::error!("ExtensionType - error. Unsupported type {v}");
-                    Err(RecErr::UnsupportedExtension)
+                    Err(Mutter::UnsupportedExtension)
                 }
             }
         }
@@ -200,33 +264,33 @@ pub mod tls3 {
     pub struct CipherSuites(Vec<CipherSuite>);
 
     impl TryFrom<Vec<CipherSuite>> for CipherSuites {
-        type Error = RecErr;
+        type Error = Mutter;
 
-        fn try_from(cipher_suites: Vec<CipherSuite>) -> Result<Self, RecErr> {
+        fn try_from(cipher_suites: Vec<CipherSuite>) -> Result<Self, Mutter> {
             if !cipher_suites.is_empty() {
                 let mut cipher_suite_dup: Vec<bool> = vec![true, false, false, false, false, false];
                 for cs in cipher_suites.iter() {
                     let (_, cl) = cs.code();
                     if cipher_suite_dup[cl as usize] {
-                        return Err(RecErr::CipherDuplicate)
+                        return Err(Mutter::CipherDuplicate)
                     } else {
                         cipher_suite_dup[cl as usize] = true;
                     }
                 }
                 Ok(CipherSuites(cipher_suites))
             } else {
-                Err(RecErr::CipherSuiteLen)
+                Err(Mutter::CipherSuiteLen)
             }
         }
     }
 
     impl CipherSuites {
-        pub fn deserialize(bytes: &[u8]) -> Result<(CipherSuites, usize), RecErr> {
+        pub fn deserialize(bytes: &[u8]) -> Result<(CipherSuites, usize), Mutter> {
             let mut i: usize = 0;
             // cipher suites - len followed by identifiers; sequence of byte-pairs.
             let cipher_suite_len: usize = ((bytes[i] as usize) << 8) | bytes[i + 1] as usize;
             if (cipher_suite_len & 1 == 1) || !(2..=10).contains(&cipher_suite_len) {
-                return Err(RecErr::CipherSuiteLen)
+                return Err(Mutter::CipherSuiteLen)
             }
             i += 2;
             let mut cipher_suites: Vec<CipherSuite> = vec![];
@@ -235,13 +299,15 @@ pub mod tls3 {
                 let cm = bytes[i + k];
                 let cl = bytes[i + 1 + k];
                 let cs = CipherSuite::try_from((cm, cl))?;
+                log::info!("\tcipher_suite: {cs:#?}");
                 if cipher_suite_dup[cl as usize] {
-                    return Err(RecErr::CipherDuplicate)
+                    return Err(Mutter::CipherDuplicate)
                 } else {
                     cipher_suite_dup[cl as usize] = true;
                     cipher_suites.push(cs);
                 }
             }
+            log::info!("\tdeserialized cipher_suites: {cipher_suites:#?}");
             Ok((CipherSuites(cipher_suites), cipher_suite_len + 2))
         }
 
@@ -262,6 +328,7 @@ pub mod tls3 {
         }
     }
 
+    // TODO: define a trait for extension type. Define concrete implementations.
     #[derive(Clone, Copy, Debug)]
     pub struct Extension<'a> {
         xtc: ExtensionTypeCode,
@@ -272,11 +339,11 @@ pub mod tls3 {
 
     impl Extensions {
         // 'bytes' holds a list of extensions. The first two bytes encode the size of the list,
-        fn deserialize(bytes: &[u8]) -> Result<(Vec<Extension>, usize), RecErr> {
+        fn deserialize(bytes: &[u8]) -> Result<(Vec<Extension>, usize), Mutter> {
             // extensions - length in two bytes
             let ext_len: usize = ((bytes[0] as usize) << 8) | bytes[1] as usize;
             if ext_len == 0 || ext_len > bytes.len() {
-                return Err(RecErr::ExtensionLen)
+                return Err(Mutter::ExtensionLen)
             }
             let bytes: &[u8] = &bytes[2..];
             let mut i: usize = 0;
@@ -344,9 +411,9 @@ pub mod tls3 {
             self.xtc == ExtensionTypeCode::KeyShare
         }
 
-        fn verify(&self) -> Result<&Self, RecErr> {
+        fn verify(&self) -> Result<&Self, Mutter> {
             if self.xtc == ExtensionTypeCode::SupportedVersions && self.data != Some(&[0x03_u8, 0x04]) {
-                Err(RecErr::UnsupportedVersion)
+                Err(Mutter::UnsupportedVersion)
             } else {
                 Ok(self)
             }
@@ -356,8 +423,8 @@ pub mod tls3 {
                 ExtensionTypeCode::SupportedVersions => 7,
                 // ed25519 key is 32 bytes + 10 bytes prefix describing the key share
                 ExtensionTypeCode::KeyShare => 42,
-                ExtensionTypeCode::SupportedGroups => 10,
-                ExtensionTypeCode::SignatureAlgorithms => 10,
+                ExtensionTypeCode::SupportedGroups => 10 /* TODO: include secp256r1 key share */,
+                ExtensionTypeCode::SignatureAlgorithms => 12, // 14,
                 ExtensionTypeCode::ServerName => {
                     let sn = self.data.expect("server name is mandatory for TLS 1.3");
                     sn.len() + 9
@@ -369,7 +436,7 @@ pub mod tls3 {
             }
         }
 
-        fn deserialize(bytes: &'a [u8], start: usize) -> Result<(Extension<'a>, usize), RecErr> {
+        fn deserialize(bytes: &'a [u8], start: usize) -> Result<(Extension<'a>, usize), Mutter> {
             let mut i = start;
             let xtc = (bytes[i], bytes[i + 1]);
             let ext_type_code = ExtensionTypeCode::from(xtc)?;
@@ -382,10 +449,19 @@ pub mod tls3 {
                     (bytes[i] as usize, i)
                 }
             } else if ext_type_code == ExtensionTypeCode::KeyShare {
+                let curve_id = ((bytes[i + 2] as u16) << 8) | (bytes[i + 3] as u16);
                 let key_share_ext_len = ((bytes[i] as usize) << 8) | (bytes[i + 1] as usize);
-                let curve_id = ((bytes[i + 2] as usize) << 8) | (bytes[i + 3] as usize);
                 log::info!("extension {:?} ext_total_len = {}, curve = {}", ext_type_code, key_share_ext_len, curve_id);
-                (((bytes[i + 4] as usize) << 8) | (bytes[i + 5] as usize), i + 6)
+
+                if curve_id == SupportedGroup::Secp256r1 as u16 {
+                    log::error!("Error - Support for secp256r1 key share is not yet available");
+                    return Err(Mutter::Secp256r1NotYetSupported)
+                }
+                let x25519_key_len = ((bytes[i + 4] as usize) << 8) | (bytes[i + 5] as usize);
+                if x25519_key_len != 32 {
+                    return Err(Mutter::X25519KeyLenBad)
+                }
+                (x25519_key_len, i + 6)
             } else {
                 (0, i)
             };
@@ -399,7 +475,7 @@ pub mod tls3 {
 
                 Ok((ext, k - start))
             } else {
-                Err(RecErr::UnsupportedExtension)
+                Err(Mutter::UnsupportedExtension)
             }
         }
 
@@ -459,14 +535,15 @@ pub mod tls3 {
                 // MUSt support ECDSA-SECP256r1-SHA256.
                 // MUST support RSA-PKCS1-SHA256 for certificates.
                 ExtensionTypeCode::SignatureAlgorithms => {
-                    let n = 10u8;
+                    let n = 12u8;
                     bytes[i..i + n as usize].copy_from_slice(&[
                         0, 0x0d, // extension "Signature Algorithms""
                         0, n - 4, // 4 bytes of "Signature Algorithms" extension data follows
                         0, n - 6, // 2 bytes of the algorithm identifier
+                        8, 7, // value for the ED25519
                         4, 3, // value for the ECDSA-SECP256r1-SHA256 - P256
                         8, 4, // value for RSA-PSS-RSAE-SHA256
-                        // 8, 7, // value for the ED25519
+                        // 4, 1, // RSA_PKCS1_SHA256
                     ]);
                     n as usize
                 }
@@ -478,10 +555,10 @@ pub mod tls3 {
     struct CompressionMethods {}
 
     impl CompressionMethods {
-        pub fn deserialize(bytes: &[u8]) -> Result<usize, RecErr> {
+        pub fn deserialize(bytes: &[u8]) -> Result<usize, Mutter> {
             // compression methods
             if !(bytes[0] == 1 && bytes[1] == 0) {
-                return Err(RecErr::CompressionMethods)
+                return Err(Mutter::CompressionMethods)
             }
             Ok(2)
         }
@@ -490,7 +567,7 @@ pub mod tls3 {
     #[derive(Clone, Debug)]
     pub struct ClientHelloHandshake<'a> {
         // TLSPlainText; page 79, sec 5.1. Record Layer
-        rct: ContentType, // record content type - Handshake(22)
+        rct: RecordContentType, // record content type - Handshake(22)
         // TLS 1.3 has deprecated the legacy record version indicator.
         // It MUST be set to 0x0303, and ignored for all practical purposes.
         legacy_rec_ver: ProtoColVersion, // lvalue: u16 = 0x0303
@@ -514,7 +591,7 @@ pub mod tls3 {
 
     #[allow(dead_code)]
     impl<'a> ClientHelloHandshake<'a> {
-        pub fn new(random: Random, ciphers: Vec<CipherSuite>, extensions: Vec<Extension<'a>>) -> Result<Self, RecErr> {
+        pub fn try_from(random: Random, ciphers: Vec<CipherSuite>, extensions: Vec<Extension<'a>>) -> Result<Self, Mutter> {
             let ch_data_len =
                 48 +
                     ciphers.len() * 2 +
@@ -522,11 +599,11 @@ pub mod tls3 {
                     Extensions::size(&extensions);
 
             if ch_data_len >= (1 << 14) + 3 {
-                return Err(RecErr::TooBig);
+                return Err(Mutter::TooBig);
             }
 
             Ok(ClientHelloHandshake {
-                rct: ContentType::Handshake,
+                rct: RecordContentType::Handshake,
                 legacy_rec_ver: LEGACY_VER_0X0303,
                 fragment_len: (ch_data_len - 3) as u16,
                 ht: HandshakeType::ClientHello,
@@ -550,7 +627,7 @@ pub mod tls3 {
                 32 + // 11: random
                 1 + // 43: session_id_len = 0. In our implementation, value == 0
                 2 + // 44: cipher_suite_len; uses 2 bytes (u16)
-                // 46: lis_of(cipher_suite) -- cipher_suite_len bytes
+                // 46: list_of(cipher_suite) -- cipher_suite_len bytes
                 2 * self.cipher_suites.count() +
                 2 + // (46 + cipher_suite_len): compression_methods = (1, 0)
                 2 + // (46 + cipher_suite_len + 2): ext_len
@@ -558,7 +635,7 @@ pub mod tls3 {
                 self.extensions.iter().fold(0, |acc, ext| acc + ext.size())
         }
 
-        pub fn serialize(&self, bytes: &'a mut [u8]) -> Result<usize, RecErr> {
+        pub fn serialize(&self, bytes: &'a mut [u8]) -> Result<usize, Mutter> {
             // first five bytes of the message hold content_type, legacy_version, and fragment_len.
             let frag_len: u16 = self.size() as u16 - 5;
             bytes[0..3].copy_from_slice(&[
@@ -579,9 +656,10 @@ pub mod tls3 {
             (bytes[i], bytes[i + 1]) = (3, 3);
             i += 2;
             // 11: random
-            for x in 0..32_u8 {
-                bytes[i + x as usize] = x + 100;
-            }
+            //for x in 0..32_u8 {
+            //    bytes[i + x as usize] = x + 100;
+            //}
+            bytes[i..i + 32].copy_from_slice(self.random.as_slice());
             i += 32;
             // 43: session_id = (0) - essentially an empty session id.
             bytes[i] = 0;
@@ -602,36 +680,36 @@ pub mod tls3 {
             Ok(i)
         }
 
-        pub fn deserialize(bytes: &'a [u8]) -> Result<ClientHelloHandshake<'a>, RecErr> {
+        pub fn deserialize(bytes: &'a [u8]) -> Result<ClientHelloHandshake<'a>, Mutter> {
             let mut i: usize = 0;
-            if bytes[i] != ContentType::Handshake as u8 {
-                return Err(RecErr::RecType)
+            if bytes[i] != RecordContentType::Handshake as u8 {
+                return Err(Mutter::RecType)
             }
             i += 1; // 1
             if (((bytes[i] as u16) << 8) | bytes[i + 1] as u16) != LEGACY_VER_0X0303 {
-                return Err(RecErr::LegacyRecordVer)
+                return Err(Mutter::LegacyRecordVer)
             }
             i += 2; // 3
             let frag_len: usize = ((bytes[i] as usize) << 8) | bytes[i + 1] as usize;
             if !(64..=REC_SIZE_BYTES_MAX).contains(&frag_len) {
-                return Err(RecErr::FragmentLen)
+                return Err(Mutter::FragmentLen)
             }
             i += 2; // 5
             assert_eq!(bytes.len() - 5, frag_len);
             log::info!("frag_len = {frag_len}");
             if bytes[i] != HandshakeType::ClientHello as u8 {
-                return Err(RecErr::HandshakeType)
+                return Err(Mutter::HandshakeType)
             }
             i += 1; // 6
             let msg_len: usize = ((bytes[i] as usize) << 16) | ((bytes[i + 1] as usize) << 8) | (bytes[i + 2] as usize);
             if !(64..=REC_SIZE_BYTES_MAX).contains(&msg_len) {
-                return Err(RecErr::MsgLen)
+                return Err(Mutter::MsgLen)
             }
             assert_eq!(frag_len - 4, msg_len);
             i += 3; // 9
             log::info!("msg_len = {msg_len}");
             if (((bytes[i] as u16) << 8) | bytes[i + 1] as u16) != LEGACY_VER_0X0303 {
-                return Err(RecErr::LegacyTLS13MsgVer)
+                return Err(Mutter::LegacyTLS13MsgVer)
             }
             i += 2; // 11
             let _random: &[u8] = &bytes[i..i + 32];
@@ -639,7 +717,7 @@ pub mod tls3 {
             let sid_len: u8 = bytes[i];
             log::info!("session_id_len = {sid_len}");
             if sid_len > 32 {
-                return Err(RecErr::SessionIdLen)
+                return Err(Mutter::SessionIdLen)
             }
             // copy session_id including its length
             let _sid =
@@ -660,15 +738,14 @@ pub mod tls3 {
             i += ext_len;
 
             assert_eq!(i, frag_len + 5);
-            Err(RecErr::BadInput)
+            Err(Mutter::BadInput)
         }
     }
 
-    #[allow(dead_code)]
     #[derive(Debug)]
     pub struct ServerHelloHandshake<'a> {
         // TLSPlainText; page 79, sec 5.1. Record Layer
-        rct: ContentType, // record content type - Handshake(22)
+        rct: RecordContentType, // record content type - Handshake(22)
         // TLS 1.3 has deprecated the legacy record version indicator.
         // It MUST be set to 0x0303, and ignored for all practical purposes.
         legacy_rec_ver: ProtoColVersion, // legacy record version; value: u16 = 0x0303
@@ -695,10 +772,11 @@ pub mod tls3 {
         pub(crate) extensions: Vec<Extension<'a>>,
     }
 
+    #[allow(dead_code)]
     impl<'a> ServerHelloHandshake<'a> {
         pub fn new(rec_frag_len: u16, random: Random, sid: Option<&'a [u8]>, cipher: CipherSuite, extensions: Vec<Extension<'a>>) -> Self {
             ServerHelloHandshake {
-                rct: ContentType::Handshake,
+                rct: RecordContentType::Handshake,
                 legacy_rec_ver: LEGACY_VER_0X0303,
                 fragment_len: rec_frag_len,
                 ht: HandshakeType::ServerHello,
@@ -712,8 +790,20 @@ pub mod tls3 {
             }
         }
 
-        pub fn deserialize(reader: &'a mut ServerHelloMsgReader) -> Result<ServerHelloHandshake<'a>, RecErr> {
+        pub fn deserialize(reader: &'a mut ServerHelloMsgReader) -> Result<(ServerHelloHandshake<'a>, usize), Mutter> {
             reader.read()
+        }
+
+        // TODO: extensions must type check using traits
+        pub fn x25519_key(&self) -> Result<[u8; 32], Mutter> {
+            if let Some(&xt) = self.extensions
+                                   .iter().find(|ext| ext.xtc == ExtensionTypeCode::KeyShare) {
+                if let Some(bytes) = xt.data {
+                    return bytes.try_into()
+                                .map_err(|_| Mutter::X25519KeyLenBad)
+                }
+            }
+            Err(Mutter::MissingX25519Key)
         }
     }
 
@@ -723,6 +813,7 @@ pub mod tls3 {
         bytes: &'a [u8],
     }
 
+    #[allow(dead_code)]
     impl<'a> ServerHelloMsgReader<'a> {
         pub fn new(bytes: &'a [u8]) -> Self {
             Self {
@@ -779,28 +870,28 @@ pub mod tls3 {
             (&self.bytes[self.i..self.i + n], self.slide(n)).0
         }
 
-        fn read_extensions(&mut self) -> Result<Vec<Extension<'a>>, RecErr> {
+        fn read_extensions(&mut self) -> Result<Vec<Extension<'a>>, Mutter> {
             // eprintln!("read_extensions i = {}, {:?}", self.i, &self.bytes[self.i..]);
             let (extensions, ext_len) = Extensions::deserialize(&self.bytes[self.i..])?;
             self.slide(ext_len);
             Ok(extensions)
         }
 
-        fn read_empty_compression_methods(&mut self) -> Result<bool, RecErr> {
+        fn read_empty_compression_methods(&mut self) -> Result<bool, Mutter> {
             if self.read_u8() == 0 {
                 Ok(true)
             } else {
-                Err(RecErr::CompressionMethods)
+                Err(Mutter::CompressionMethods)
             }
         }
 
-        fn read_random(&mut self) -> Result<Random, RecErr> {
-            self.read_bytes(32).try_into().map_err(|_| RecErr::RandomVal)
+        fn read_random(&mut self) -> Result<Random, Mutter> {
+            self.read_bytes(32).try_into().map_err(|_| Mutter::RandomVal)
         }
 
         fn read_session_id(&mut self) -> Option<&'a [u8]> {
             let sid_len: usize = self.read_u8() as usize;
-            log::info!("read_session_id: len = {sid_len}");
+            // log::info!("read_session_id: len = {sid_len}");
             if sid_len > 0 {
                 let sid: &[u8] = self.read_bytes(sid_len);
                 Some(sid)
@@ -809,28 +900,28 @@ pub mod tls3 {
             }
         }
 
-        pub fn read(&mut self) -> Result<ServerHelloHandshake<'a>, RecErr> {
-            if !self.u8(ContentType::Handshake as u8) {
-                return Err(RecErr::RecType)
+        pub fn read(&mut self) -> Result<(ServerHelloHandshake<'a>, usize), Mutter> {
+            if !self.u8(RecordContentType::Handshake as u8) {
+                return Err(Mutter::RecType)
             }
             if !self.u16(LEGACY_VER_0X0303) {
-                return Err(RecErr::LegacyRecordVer)
+                return Err(Mutter::LegacyRecordVer)
             }
             let frag_len: usize = self.read_u16() as usize;
             assert_eq!(self.pos(), 5);
             if !(32..=REC_SIZE_BYTES_MAX).contains(&frag_len) {
-                return Err(RecErr::FragmentLen)
+                return Err(Mutter::FragmentLen)
             }
             if !self.u8(HandshakeType::ServerHello as u8) {
-                return Err(RecErr::HandshakeType)
+                return Err(Mutter::HandshakeType)
             }
             let msg_len: usize = self.read_u24();
             if !(32..=REC_SIZE_BYTES_MAX).contains(&msg_len) {
-                return Err(RecErr::MsgLen)
+                return Err(Mutter::MsgLen)
             }
             assert_eq!(frag_len - 4, msg_len);
             if !self.u16(LEGACY_VER_0X0303) {
-                return Err(RecErr::LegacyTLS13MsgVer)
+                return Err(Mutter::LegacyTLS13MsgVer)
             }
             let random: Random = self.read_random()?;
             let sid = self.read_session_id();
@@ -839,29 +930,29 @@ pub mod tls3 {
 
             let extensions = self.read_extensions()?;
 
-            Ok(ServerHelloHandshake::new((frag_len & 0xFFFF) as u16,
-                                         random,
-                                         sid,
-                                         cipher_suite,
-                                         extensions))
+            Ok((ServerHelloHandshake::new((frag_len & 0xFFFF) as u16,
+                                          random,
+                                          sid,
+                                          cipher_suite,
+                                          extensions), self.i))
         }
     }
 
     pub struct ChangeCipherSpecMsg(());
 
     impl ChangeCipherSpecMsg {
-        pub fn deserialize(bytes: &[u8]) -> Result<(Option<Self>, usize), RecErr> {
-            if bytes[0] != ContentType::ChangeCipherSpec as u8 {
+        pub fn deserialize(bytes: &[u8]) -> Result<(Option<Self>, usize), Mutter> {
+            if bytes[0] != RecordContentType::ChangeCipherSpec as u8 {
                 return Ok((None, 0))
             }
             if bytes.len() < 6 {
-                return Err(RecErr::BadInput)
+                return Err(Mutter::BadInput)
             }
             if (bytes[1], bytes[2]) != (0x3, 0x3) {
-                return Err(RecErr::UnsupportedVersion)
+                return Err(Mutter::UnsupportedVersion)
             }
             if (bytes[3], bytes[4], bytes[5]) != (0x0, 0x1, 0x1) {
-                return Err(RecErr::InvalidCipherSpecChange)
+                return Err(Mutter::InvalidCipherSpecChange)
             }
             log::info!("ChangeCipherSpecMsg - Ok");
             Ok((Some(ChangeCipherSpecMsg(())), 6))
@@ -871,27 +962,26 @@ pub mod tls3 {
     pub struct ApplicationDataMsg {}
 
     impl ApplicationDataMsg {
-        pub fn deserialize(bytes: &[u8]) -> Result<(Option<Self>, usize), RecErr> {
+        pub fn deserialize(bytes: &[u8]) -> Result<usize, Mutter> {
             if bytes.is_empty() || bytes.len() < 6 {
-                Err(RecErr::BadInput)
-            } else if bytes[0] != ContentType::ApplicationData as u8 {
+                Err(Mutter::BadInput)
+            } else if bytes[0] != RecordContentType::ApplicationData as u8 {
                 log::info!("ApplicationDataMsg::deserialize - nothing to do.");
-                Ok((None, 0))
+                Ok(0)
             } else if (bytes[1], bytes[2]) != (0x3, 0x3) {
-                Err(RecErr::UnsupportedVersion)
+                Err(Mutter::UnsupportedVersion)
             } else {
                 // log::info!("ApplicationDataMsg prefix_slice = {:?}", &bytes[0..8]);
                 let data_len = ((bytes[3] as usize) << 8) | (bytes[4] as usize);
-                log::info!("application data len = {data_len}/{}, data(pre16): {:?}", bytes.len(),  &bytes[0..16]);
-                Ok((None, 5 + data_len))
-                //Ok((None, data_len))
+                // log::info!("application data len = {data_len}/{}, data(pre8): {:?}, data(last8): {:?}", bytes.len(),  &bytes[0..8], &bytes[data_len+5-8..data_len+10]);
+                Ok(5 + data_len)
             }
         }
     }
 
     #[repr(u8)]
     #[derive(Clone, Debug)]
-    pub enum RecErr {
+    pub enum Mutter {
         RecType = 1,
         LegacyRecordVer = 2,
         FragmentLen = 4,
@@ -908,6 +998,7 @@ pub mod tls3 {
         ExtensionType = 47,
         UnsupportedExtension = 48,
         UnsupportedVersion = 50,
+        UnsupportedHandshakeMessageType = 53,
         ExtensionData = 59,
 
         HandshakeType = 129,
@@ -918,10 +1009,169 @@ pub mod tls3 {
         TlsConnection = 166,
         TlsChannelReadiness = 167,
         StreamError = 168,
+        SocketPropertyError = 171,
 
-        TooBig = 251,
-        NotImpl = 253,
+        TooBig = 221,
+        MsgSizeInvalid = 222,
+        NotImpl = 224,
+
+        RandomGen = 238,
+        MissingX25519Key = 240,
+        Secp256r1NotYetSupported = 244,
+        X25519KeyLenBad = 247,
+
         BadInput = 255,
+    }
+}
+
+// TODO: clear the values after use
+pub struct X25519KeyPair(EphemeralSecret, PublicKey);
+impl Default for X25519KeyPair {
+    fn default() -> Self {
+        let sk = EphemeralSecret::random();
+        let pk = PublicKey::from(&sk);
+        Self(sk, pk)
+    }
+}
+
+impl X25519KeyPair {
+    pub fn public_bytes(&self) -> &[u8; 32] {
+        self.1.as_bytes()
+    }
+
+    pub fn dh(self, peer_pk_bytes: [u8; 32]) -> SharedSecret {
+        let peer_pk = PublicKey::from(peer_pk_bytes);
+        self.0.diffie_hellman(&peer_pk)
+    }
+}
+
+pub struct CryptoRandom<const N: usize> ();
+
+impl<const N: usize> CryptoRandom<N> {
+    pub fn bytes() -> Result<[u8; N], Mutter> {
+        let mut buf = [0u8; N];
+        OsRng.fill_bytes(&mut buf);
+        Ok(buf)
+    }
+}
+
+// section 7.1, Key Schedule. pages 92-94.
+// page 93 displays the sequence of steps in deriving different secrets.
+pub struct KeySchedule<const HASH_LEN: usize> {
+    //psk: [u8; LEN],
+    //dhe_secret: [u8; LEN],
+}
+
+// WARNING - hardcoded hash function!
+// TODO - figure out how HKDF selection works.
+#[allow(dead_code)]
+impl<const HASH_LEN: usize> KeySchedule<HASH_LEN> {
+    fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Vec<u8> {
+        let (prk, _hk) = Hkdf::<Sha256>::extract(Some(salt), ikm);
+        assert_eq!(prk.len(), HASH_LEN);
+        assert_ne!(prk.as_slice(), [0; HASH_LEN]);
+        prk.to_vec()
+    }
+
+    // 'secret' is the pseudo-random key (prk)
+    fn hkdf_expand_label(secret: &[u8], label: &str, ctx: &[u8], output_len: u16) -> Vec<u8> {
+        // log::info!("hkdf_expand_label - label:{label:}, ctx:{ctx:?}, secret:{secret:?}");
+        assert_eq!(secret.len(), HASH_LEN);
+        assert!(!label.is_empty() && label.len() <= 255);
+        let label_len = ("tls13 ".len() + label.len()) as u16;
+        assert!(label_len > 6 && label_len <= 255);
+        let ctx_len = ctx.len() as u16;
+        assert!(ctx.len() <= 255);
+        let hkdf_label_full_len = 4 + label_len + ctx_len;
+        assert!(hkdf_label_full_len <= 514);
+
+        let mut hkdf_label: Vec<u8> = Vec::new(); //vec![0; hkdf_label_full_len as usize];
+        let hash_len_bytes = output_len.to_be_bytes();
+        hkdf_label.push(hash_len_bytes[0]); // 0
+        hkdf_label.push(hash_len_bytes[1]); // 1
+        // log::info!("hkdf_expand_label - label_len:{label_len:},\n\tctx_len:{ctx_len:},\n\thkdf_label_full_len:{hkdf_label_full_len:}\n\thash_len_bytes:{hash_len_bytes:?}");
+
+        hkdf_label.push(label_len as u8); // 2
+        hkdf_label.append(&mut ["tls13 ".as_bytes(), label.as_bytes()].concat()); // 3..3+label_len
+
+        hkdf_label.push(ctx_len as u8); // 3+label_len
+        if ctx_len > 0 {
+            hkdf_label.resize(hkdf_label_full_len as usize, 0);
+            hkdf_label[4 + label_len as usize..hkdf_label_full_len as usize].copy_from_slice(ctx)
+        }
+        let hk = Hkdf::<Sha256>::from_prk(secret).expect("random secret value to be large enough");
+        let mut okm = vec![0u8; output_len as usize];
+        hk.expand(&hkdf_label, &mut okm).expect("sufficient Sha256 output length to expand");
+        assert_ne!(okm, [0u8; 32]);
+        // log::info!("hkdf_label:{hkdf_label:?}\n");
+        assert_eq!(hkdf_label.len(), hkdf_label_full_len as usize);
+        okm
+    }
+
+    fn derive_secret(secret: &[u8], label: &str, messages: &[u8]) -> Vec<u8> {
+        let mut sha2 = Sha256::new();
+        Digest::update(&mut sha2, messages);
+        let hash = sha2.finalize();
+        Self::hkdf_expand_label(secret, label, &hash, HASH_LEN as u16)
+    }
+
+    fn early_secret() -> Vec<u8> {
+        Self::hkdf_extract([0; HASH_LEN].as_slice(), [0; HASH_LEN].as_slice())
+    }
+
+    // 'salt_for_handshake_traffic_secret' produces salt for deriving handshake secret..
+    // hkdf_extract(salt_handshake_traffic_secret, dhe_shared_secret) -> handshake_secret
+    fn salt_for_handshake_traffic_secret(prk: &[u8]) -> Vec<u8> {
+        Self::derive_secret(prk, "derived", &[])
+    }
+
+    fn handshake_traffic_secret(salt_prk: &[u8], dhe_secret: &[u8]) -> Vec<u8> {
+        Self::hkdf_extract(salt_prk, dhe_secret)
+    }
+
+    fn client_handshake_traffic_secret(salt_prk: &[u8], ch_plus_sh: &[u8]) -> Vec<u8> {
+        Self::derive_secret(salt_prk, "c hs traffic", ch_plus_sh)
+    }
+
+    fn server_handshake_traffic_secret(salt_prk: &[u8], ch_plus_sh: &[u8]) -> Vec<u8> {
+        Self::derive_secret(salt_prk, "s hs traffic", ch_plus_sh)
+    }
+
+    // Section 7.3. Traffic Key Calculation. page 95
+    // 'key_len' is the length of the key being generated.
+    // the purpose value "key" indicates the specific value being generated
+    // The value of 'secret' for Handshake record type for server and client is
+    // 'server_handshake_traffic_secret', and 'client_handshake_traffic_secret', respectively.
+    // The value of 'secret' for Application Data record type is
+    // 'server_application_traffic_secret' and 'client_application_traffic_secret', respectively.
+    fn sender_write_key(secret: &[u8], key_len: u16) -> Vec<u8> {
+        Self::hkdf_expand_label(secret, "key", &[], key_len)
+    }
+
+    fn sender_write_iv(secret: &[u8], iv_len: u16) -> Vec<u8> {
+        Self::hkdf_expand_label(secret, "iv", &[], iv_len)
+    }
+
+    fn salt_for_master_traffic_secret(prk: &[u8]) -> Vec<u8> {
+        Self::derive_secret(prk, "derived", &[])
+    }
+
+    fn traffic_master_secret(salt_prk: &[u8]) -> Vec<u8> {
+        Self::hkdf_extract(salt_prk, &[0; 32])
+    }
+
+    // 'ch_plus_sf' is the concatenation of ClientHello upto and including ServerFinished messages
+    fn client_application_traffic_secret(salt_prk: &[u8], ch_plus_sf: &[u8]) -> Vec<u8> {
+        Self::derive_secret(salt_prk, "c ap traffic", ch_plus_sf)
+    }
+
+    // 'ch_plus_sf' is the concatenation of ClientHello upto and including ServerFinished messages
+    fn server_application_traffic_secret(salt_prk: &[u8], ch_plus_sf: &[u8]) -> Vec<u8> {
+        Self::derive_secret(salt_prk, "s ap traffic", ch_plus_sf)
+    }
+
+    fn new(_psk: [u8; HASH_LEN], _dhe_secret: [u8; HASH_LEN]) -> Self {
+        Self {}
     }
 }
 
@@ -934,62 +1184,63 @@ pub struct TlsChannel {
 
 #[allow(dead_code)]
 impl TlsChannel {
-    pub async fn new(server: &str) -> Result<TlsChannel, RecErr> {
+    pub async fn new(server: &str) -> Result<TlsChannel, Mutter> {
         let server_sock_addresses = server.to_socket_addrs()
-                                          .map_err(|_| RecErr::BadNetworkAddress)?;
+                                          .map_err(|_| Mutter::BadNetworkAddress)?;
         for serv_sock_addr in server_sock_addresses {
-            let socket = TcpSocket::new_v4().map_err(|_| RecErr::TlsConnection)?;
+            let socket = TcpSocket::new_v4().map_err(|_| Mutter::TlsConnection)?;
             if let Ok(sock_stream) = socket.connect(serv_sock_addr).await {
+                sock_stream.nodelay().map_err(|_| Mutter::SocketPropertyError)?;
                 return Ok(TlsChannel {
                     server: server.to_owned(),
                     stream: sock_stream,
                 })
             }
         }
-        Err(RecErr::TlsConnection)
+        Err(Mutter::TlsConnection)
     }
 
-    pub async fn readable(&self) -> Result<(), RecErr> {
+    pub async fn readable(&self) -> Result<(), Mutter> {
         self.stream.readable().await
-            .map_err(|_| RecErr::TlsChannelReadiness)
+            .map_err(|_| Mutter::TlsChannelReadiness)
             .map(|_| ())
     }
 
-    pub async fn read(&self, buf: &mut [u8]) -> Result<usize, RecErr> {
+    pub async fn read(&self, mut buf: &mut [u8]) -> Result<usize, Mutter> {
         let mut serv_resp_len: usize = 0;
         loop {
-            let _ = self.stream.readable()
-                        .await
-                        .map_err(|_| RecErr::TlsChannelReadiness);
-            return match self.stream.try_read(&mut buf[serv_resp_len..]) {
+            self.readable().await?;
+            return match self.stream.try_read_buf(&mut buf) {
                 Ok(0) => {
                     Ok(serv_resp_len)
                 }
                 Ok(n) => {
                     serv_resp_len += n;
-                    continue;
+                    continue; // this takes a few minutes to drain the data from the server...
+                    // TODO: return as soon as we have data, and keep reading when required.
+                    // Ok(serv_resp_len)
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     continue;
                 }
                 Err(e) => {
                     log::error!("error: {e:#?}");
-                    Err(RecErr::StreamError)
+                    Err(Mutter::StreamError)
                 }
             }
         }
     }
 
-    pub async fn write(&self, buf: &[u8]) -> Result<usize, RecErr> {
+    pub async fn write(&self, buf: &[u8]) -> Result<usize, Mutter> {
         let _ = self.stream.writable().await;
-        self.stream.try_write(&buf)
-            .map_err(|_| RecErr::TlsChannelReadiness)
+        self.stream.try_write(buf)
+            .map_err(|_| Mutter::TlsChannelReadiness)
     }
 
-    pub async fn shutdown(&mut self) -> Result<(), RecErr> {
+    pub async fn shutdown(&mut self) -> Result<(), Mutter> {
         self.stream.shutdown()
             .await
-            .map_err(|_| RecErr::TlsChannelReadiness)
+            .map_err(|_| Mutter::TlsChannelReadiness)
     }
 }
 
@@ -1003,16 +1254,16 @@ pub fn tls_channel_read() {}
 mod tls13_client_tests {
     use buckle::init_logger;
 
-    use crate::sample;
+    use crate::{CryptoRandom, sample};
     use crate::tls3::{CipherSuite, ClientHelloHandshake, Extension};
 
     #[test]
     fn test_deserialize_01() {
         init_logger(true);
-        let random: Vec<u8> = (64..(64 + 32)).collect();
-        let res = ClientHelloHandshake::new(random.try_into().unwrap(),
-                                            vec![CipherSuite::TlsChacha20Poly1305Sha256, CipherSuite::TlsAes128GcmSha256],
-                                            vec![Extension::supported_ver_1_3()]
+        let random: Vec<u8> = CryptoRandom::<32>::bytes().expect("").to_vec(); //;(64..(64 + 32)).collect();
+        let res = ClientHelloHandshake::try_from(random.try_into().unwrap(),
+                                                 vec![CipherSuite::TlsChacha20Poly1305Sha256, CipherSuite::TlsAes128GcmSha256],
+                                                 vec![Extension::supported_ver_1_3()]
         );
         assert!(res.is_ok());
         let ch = res.unwrap();
@@ -1056,102 +1307,208 @@ mod sample {
         0x21, 0xA2, 0x8E, 0x3B, 0x75, 0xE9, 0x65, 0xD0, 0xD2, 0xCD, 0x16, 0x62, 0x54, ];
 }
 
+mod consts {
+    pub(crate) const HELLO_RETRY_REQUEST: &[u8] = &[
+        0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+        0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+        0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+        0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C
+    ];
+}
+
 // use the following command to run only this example.
 // RUSTFLAGS="-Adead_code -Aunused" cargo run --example t3c -- --show-output
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let tls13_servers = [
         ("www.india.gov", "www.india.gov.in:443"),
-        ("usa.gov", "usa.gov:443"),
-        ("www.mitre.org", "www.mitre.org:443"),
-        ("mozilla.org", "mozilla.org:443"),
+        // ("usa.gov", "usa.gov:443"),
+        // ("nsa.gov", "nsa.gov:443"),
+        // ("www.mitre.org", "www.mitre.org:443"),
+        // ("mozilla.org", "mozilla.org:443"),
         ("letsencrypt.org", "letsencrypt.org:443"),
-        ("yourdot.net", "yourdot.net:443"),
-        ("github.com", "github.com:443"),
-        ("google.com", "google.com:443"),
-        ("facebook.com", "facebook.com:443"),
-        ("twitter.com", "twitter.com:443"),
-        ("microsoft.com", "microsoft.com:443"),
-        ("apple.com", "apple.com:443"),
-        ("stackexchange.com", "stackexchange.com:443"),
+        //("yourdot.net", "yourdot.net:443"),
+        // ("github.com", "github.com:443"), // individually encrypted handshake messages
+        // ("facebook.com", "www.facebook.com:443"),
+        // ("meta.com", "www.meta.com:443"),
+        ("microsoft.com", "microsoft.com:443"), // individually encrypted handshake messages
+        //("lobste.rs", "lobste.rs:443"),  // individually encrypted handshake messages
+        // ("google.com", "www.google.com:443"), // sequence of handshake messages encrypted in one block, one flight.
+        // ("twitter.com", "twitter.com:443"), // sequence of handshake messages encrypted in one block, one flight.
+        ("apple.com", "apple.com:443"), // sequence of handshake messages encrypted in one block, one flight.
+        // ("stackexchange.com", "stackexchange.com:443"), // sequence of handshake messages encrypted in one block, one flight.
+        // ("news.ycombinator.com", "news.ycombinator.com:443"), // no support for TLSv1.3
+        // ("spacex.com", "www.spacex.com:443"), // TODO: support ecdhe with secp256r1.
+        // ("whatsapp.com", "www.whatsapp.com:443")
     ];
 
-    let key_share_data: [u8; 32] = [0x35, 0x80, 0x72, 0xd6, 0x36, 0x58, 0x80, 0xd1, 0xae, 0xea, 0x32, 0x9a, 0xdf, 0x91, 0x21, 0x38, 0x38, 0x51, 0xed, 0x21, 0xa2, 0x8e, 0x3b, 0x75, 0xe9, 0x65, 0xd0, 0xd2, 0xcd, 0x16, 0x62, 0x54];
     init_logger(true);
     for (server_name, server) in tls13_servers {
         log::info!("");
         let serv_stream = TlsChannel::new(server).await;
         log::info!("Trying {server}");
+        // section 4.4.1. The Transcript Hash, page 63.
+        // Many of the cryptographic computations in TLS make use of a
+        //    transcript hash.  This value is computed by hashing the concatenation
+        //    of each included handshake message, including the handshake message
+        //    header carrying the handshake message type and length fields, but not
+        //    including record layer headers.
+        let mut handshake_msg_traffic_ctx: Vec<u8> = Vec::new();
         if let Ok(mut chan) = serv_stream {
             log::info!("Connected {server}");
             chan.stream.writable().await?;
-            let random: Vec<u8> = (64..(64 + 32)).collect();
+            let random: Vec<u8> = CryptoRandom::<32>::bytes().expect("").to_vec();
+            let x25519_key_pair = X25519KeyPair::default();
+            let key_share = x25519_key_pair.public_bytes();
+            let ch_msg_len: usize;
             {
-                let res = ClientHelloHandshake::new(random.try_into().unwrap(),
-                                                    vec![
-                                                        CipherSuite::TlsAes128GcmSha256,
-                                                        CipherSuite::TlsChacha20Poly1305Sha256,
-                                                        //CipherSuite::TlsAes128Ccm8Sha256,
-                                                        //CipherSuite::TlsAes256GcmSha384,
-                                                        //CipherSuite::TlsAes128CcmSha256,
-                                                    ],
-                                                    vec![
-                                                        Extension::server_name(server_name),
-                                                        Extension::supported_ver_1_3(),
-                                                        Extension::supported_group_x25519(),
-                                                        Extension::signature_algorithm_ed25519(),
-                                                        Extension::ed25519_key_share(&key_share_data),
-                                                    ]
+                let res = ClientHelloHandshake::try_from(random.try_into().unwrap(),
+                                                         vec![
+                                                             CipherSuite::TlsAes128GcmSha256,
+                                                             // CipherSuite::TlsChacha20Poly1305Sha256,
+                                                             //CipherSuite::TlsAes128CcmSha256,
+                                                             //CipherSuite::TlsAes256GcmSha384,
+                                                             //CipherSuite::TlsAes128CcmSha256,
+                                                         ],
+                                                         vec![
+                                                             Extension::server_name(server_name),
+                                                             Extension::supported_ver_1_3(),
+                                                             Extension::supported_group_x25519(),
+                                                             Extension::signature_algorithm_ed25519(),
+                                                             Extension::ed25519_key_share(key_share),
+                                                         ]
                 );
                 assert!(res.is_ok());
                 let ch = res.unwrap();
                 let mut bytes: [u8; 1024] = [0; 1024];
                 bytes.fill(0);
-                let ls = ch.serialize(&mut bytes[0..]).unwrap();
-                // log::info!("{:?}", &bytes[0..ls+1]);
-                let res = chan.write(&bytes[0..ls]).await;
-                assert!(res.is_ok());
-                let n = res.unwrap();
-                log::info!("sending {ls} bytes to {server_name}; wrote {n} bytes");
+                ch_msg_len = ch.serialize(&mut bytes).expect("valid ClientHello for serialization");
+                let n = chan.write(&bytes[0..ch_msg_len]).await.expect("sending ClientHello");
+                handshake_msg_traffic_ctx.extend_from_slice(&bytes[5..ch_msg_len]);
+                assert_eq!(handshake_msg_traffic_ctx.len() + 5, n);
+                log::info!("sending {ch_msg_len} bytes to {server_name}; wrote {n} bytes");
             }
 
             {
-                let mut msg_buf = [0; 8182];
+                let mut msg_buf = [0; 8 * 1024];
                 msg_buf.fill(0);
-                let res = chan.read(msg_buf.as_mut_slice()).await;
-                assert!(res.is_ok());
-                let serv_resp_len: usize = res.unwrap();
+                let serv_resp_len: usize = chan.read(msg_buf.as_mut_slice()).await.expect("ServerHello and encrypted messages");
+                assert!(serv_resp_len < msg_buf.len());
+                log::info!("ServerHello processed.");
                 if [0x16, 0x03, 0x03] == msg_buf[0..3] {
                     assert_eq!(msg_buf[5], 0x2); // server_hello
                     assert_eq!(msg_buf[9..11], [0x3, 0x3]); // legacy_tls_version
 
+                    // let mut shm_reader = ServerHelloMsgReader::new(&msg_buf);
                     let mut shm_reader = ServerHelloMsgReader::new(&msg_buf);
-                    if let Ok(shm) = ServerHelloHandshake::deserialize(&mut shm_reader) {
-                        log::info!("\tread {serv_resp_len} bytes");
-                        // log::info!("\tSH {shm:?}");
+                    let (shm, sh_len) = match ServerHelloHandshake::deserialize(&mut shm_reader) {
+                        Ok((shm, sh_len)) => (shm, sh_len),
+                        _ => {
+                            log::warn!("Handshake with {server_name} is aborted.\n");
+                            continue
+                        }
+                    };
+                    assert_eq!(shm.cipher_suite, CipherSuite::TlsAes128GcmSha256);
+                    assert_ne!(shm.random, consts::HELLO_RETRY_REQUEST);
+                    assert!(sh_len > 0);
+                    {
                         assert!(shm.legacy_session_id.is_none());
-                        log::info!("\tfrag_len = {}", shm.fragment_len);
-                        let cursor = shm_reader.pos();
+                        assert_eq!(shm.fragment_len as usize, sh_len - 5);
+                        assert_eq!(handshake_msg_traffic_ctx.len(), ch_msg_len - 5);
+                        handshake_msg_traffic_ctx.extend_from_slice(&msg_buf[5..sh_len]);
+                        assert_eq!(ch_msg_len - 5 + sh_len - 5, handshake_msg_traffic_ctx.len());
+                        // calculate ECDHE shared secret
+                        let server_ecdhe_pk_bytes = shm.x25519_key().expect("require a valid x25519 key in ServerHello");
+                        let ecdhe_secret: SharedSecret = x25519_key_pair.dh(server_ecdhe_pk_bytes);
+                        assert_ne!(ecdhe_secret.as_bytes(), &[0u8; 32]);
+                        // calculate the key schedule
+                        let early_secret = KeySchedule::<32>::early_secret();
+                        assert_eq!(early_secret.len(), 32); // HASH_LEN
+                        let salt_hs_traffic = KeySchedule::<32>::salt_for_handshake_traffic_secret(&early_secret);
+                        let hs_secret = KeySchedule::<32>::handshake_traffic_secret(&salt_hs_traffic,
+                                                                                    ecdhe_secret.as_bytes());
+                        let server_hs_secret = KeySchedule::<32>::server_handshake_traffic_secret(&hs_secret,
+                                                                                                  &handshake_msg_traffic_ctx);
+                        let server_hs_key = KeySchedule::<32>::sender_write_key(&server_hs_secret, 16);
+                        let server_hs_iv = KeySchedule::<32>::sender_write_iv(&server_hs_secret, 12);
+                        // log::info!("\nserver_hs_key_len = {}, server_hs_iv_len = {}", server_hs_key.len(), server_hs_iv.len());
+
+                        log::info!("server_resp_len = {serv_resp_len}");
                         let rcs: (Option<ChangeCipherSpecMsg>, usize) =
-                            ChangeCipherSpecMsg::deserialize(&msg_buf[cursor..serv_resp_len]).expect("change_cipher_spec");
+                            ChangeCipherSpecMsg::deserialize(&msg_buf[sh_len..serv_resp_len]).expect("change_cipher_spec");
                         assert!((rcs.0.is_none() && rcs.1 == 0) || (rcs.0.is_some() && rcs.1 == 6));
-                        let mut app_data_start = cursor + rcs.1;
+                        let mut app_data_start = sh_len + rcs.1;
+                        let mut count_rec = 0u8;
+                        let aes_decryption_key = Key::<Aes128Dec>::from_slice(&server_hs_key);
+                        assert_eq!(aes_decryption_key.len(), 16);
+                        let cipher = Aes128Gcm::new(aes_decryption_key);
+                        let mut handshake_messages = HandshakeMessageBuilder::default();
+                        let mut handshake_finished = false;
                         while app_data_start < serv_resp_len {
-                            let adm = ApplicationDataMsg::deserialize(&msg_buf[app_data_start..serv_resp_len]).expect("application_data message");
-                            if adm.1 > 5 {
-                                app_data_start += adm.1;
-                            } else {
-                                break;
+                            //let buf_len = msg_buf.len();
+                            let appl_data_len = ApplicationDataMsg::deserialize(&msg_buf[app_data_start..serv_resp_len]).expect("application_data message");
+                            // log::info!("appl_data_pre8 = {:?}, app_data_cursor = {app_data_start}, appl_data_len = {}", &msg_buf[app_data_start..app_data_start+8], appl_data_len);
+                            if appl_data_len == 0 {
+                                break
+                            }
+                            {
+                                assert!(appl_data_len > 5);
+                                // decrypt the data
+                                // update nonce with the record count
+                                let mut nonce_bytes: [u8; 12] = [0; 12];
+                                nonce_bytes.copy_from_slice(&server_hs_iv);
+                                nonce_bytes[11] ^= count_rec;
+                                let nonce = Nonce::from_slice(&nonce_bytes);
+                                {
+                                    let mut plain_text = Vec::from(&msg_buf[app_data_start + 5..app_data_start + appl_data_len]);
+                                    // section 5.2. Record Payload Protection, page 81.
+                                    // additional data - first five bytes of the record
+                                    let ad = &msg_buf[app_data_start..app_data_start + 5];
+                                    let decrypt_res = cipher.decrypt_in_place(nonce, ad, (&mut plain_text) as &mut dyn aead::Buffer);
+                                    if decrypt_res.is_ok() && !handshake_finished {
+                                        // log::info!("\n\n message_ctx before Certificate {:?}\n\n", &handshake_msg_traffic_ctx);
+                                        if let Ok((done, builder)) = handshake_messages.update(plain_text, &mut handshake_msg_traffic_ctx) {
+                                            if done {
+                                                //log::info!("handshake_message_builder - successfully serialized");
+                                                if builder.msg_type == HandshakeType::Finished {
+                                                    handshake_finished = true;
+                                                    log::info!("\thandshake_message_builder - Finish processed"); // section 4.4.4. Finished, page 72
+                                                    let mut sha256 = Sha256::new();
+                                                    Digest::update(&mut sha256, &handshake_msg_traffic_ctx);
+                                                    let transcript_hash = sha256.finalize();
+                                                    let finished_key =
+                                                        GenericArray::<_, U32>::clone_from_slice(
+                                                            &KeySchedule::<32>::hkdf_expand_label(&server_hs_secret, "finished", &[], 32));
+                                                    let mut hmac_sha256 = <Hmac<Sha256> as KeyInit>::new_from_slice(&finished_key).expect("hmac");
+                                                    hmac_sha256.update(&transcript_hash);
+                                                    let x = hmac_sha256.finalize();
+                                                    log::info!("verify_data = {:?}", x.into_bytes());
+                                                }
+                                            } else {
+                                                //log::info!("\thandshake_message_builder - builder in progress");
+                                            }
+                                        } else {
+                                            panic!("handshake_message_builder - not a handshake message...");
+                                        }
+                                    } else if handshake_finished {
+                                        let _salt_master_traffic = KeySchedule::<32>::salt_for_master_traffic_secret(&early_secret);
+                                        let _master_secret = KeySchedule::<32>::traffic_master_secret(&_salt_master_traffic);
+                                        // let server_traffic_master_secret = KeySchedule::<32>::server_application_traffic_secret(&master_secret,
+                                        log::info!("\tMessage following Finished Message {:?}...to be decrypted!!", plain_text);
+                                    }
+                                }
+                                app_data_start += appl_data_len;
+                                count_rec += 1;
+                                // log::info!("next_record_count: {count_rec}, next_app_data_cursor = {app_data_start}");
                             }
                         }
                         assert_eq!(serv_resp_len, app_data_start);
-                        log::info!("Cursor pos: {app_data_start}/{serv_resp_len}");
-                        log::info!("");
+                        log::info!("Final Cursor pos: {app_data_start}/{serv_resp_len}\n");
                         msg_buf.fill(0);
-                        let res = chan.read(msg_buf.as_mut_slice()).await;
-                        assert!(res.is_ok());
-                        let serv_resp_len: usize = res.unwrap();
-                        log::info!("read {serv_resp_len} from {server} again!");
+                        let serv_resp_len = chan.read(msg_buf.as_mut_slice()).await.expect("zero or more bytes of data");
+                        if serv_resp_len > 0 {
+                            log::info!("read {serv_resp_len} bytes from {server} again!");
+                        }
                     }
                     // assert_eq!(serv_hello_enc_ext[shm_reader.pos()], 8);
                 } else if [0x15, 0x03, 0x03] == msg_buf[0..3] {
@@ -1168,23 +1525,145 @@ async fn main() -> io::Result<()> {
                         2 => {
                             log::info!("server error: {}", alert_desc);
                             match alert_desc.try_into().expect("unknown alert desc!") {
-                                AlertDesc::RecordOverflow => log::info!("Error - record overflow."),
-                                AlertDesc::HandshakeFailure => log::info!("Error - handshake failure."),
-                                AlertDesc::DecodeError => log::info!("Error - client hello message decoding error."),
-                                AlertDesc::MissingExtension => log::info!("Error - missing extension."),
-                                AlertDesc::UnsupportedExtension => log::info!("Error - unsupported extension."),
+                                AlertDesc::RecordOverflow => log::error!("Error - record overflow."),
+                                AlertDesc::HandshakeFailure => log::error!("Error - handshake failure."),
+                                AlertDesc::DecodeError => log::error!("Error - ClientHello message decoding error."),
+                                AlertDesc::ProtocolVersion => log::error!("Error - TLSv1.3 not supported."),
+                                AlertDesc::InternalError => log::error!("Error - internal error (Server)."),
+                                AlertDesc::MissingExtension => log::error!("Error - missing extension."),
+                                AlertDesc::UnsupportedExtension => log::error!("Error - unsupported extension."),
+                                AlertDesc::UnrecognizedName => log::error!("Error - unsupported extension."),
                                 _ => log::error!("unhandled alert desc!"),
                             }
                         },
                         _ => panic!("unknown alert level and desc: ({alert_level}, {alert_desc})"),
                     }
-                    panic!("client hello fail for {server_name}");
+                    log::error!("ClientHello failed for {server_name}\n");
                 } else {
-                    panic!("Fatal Error: No response from {server_name} for client hello! Quitting...");
+                    log::error!("Error: No response from {server_name} for ClientHello\n");
                 }
             }
             let _ = chan.shutdown().await;
         }
     }
     Ok(())
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
+struct HandshakeMessageBuilder {
+    size: usize,
+    copied: usize,
+    msg_type: HandshakeType,
+}
+
+#[allow(dead_code)]
+impl HandshakeMessageBuilder {
+    fn reset(&mut self) {
+        self.size = 0;
+        self.copied = 0;
+        self.msg_type = HandshakeType::Bad;
+    }
+
+    fn required(&self) -> usize {
+        self.size - self.copied
+    }
+
+    fn update(&mut self, t: Vec<u8>, traffic_ctx: &mut Vec<u8>) -> Result<(bool, HandshakeMessageBuilder), Mutter> {
+        let zero_pad_len = t.iter().rev().take_while(|&c| *c == 0).fold(0, |acc, _| acc + 1);
+        let mut i = 0;
+        while i < t.len() {
+            let msg_begin_pos;
+            let available_msg_len;
+            if self.required() == 0 { // we are copying a fresh message record
+                let msg_type = t[i].into();
+                if msg_type == HandshakeType::Bad {
+                    log::error!("\tHandshakeMessageBuilder::update - Not a known HandshakeMessage: {:?}", &t[i..i+8]);
+                    return Err(Mutter::UnsupportedHandshakeMessageType)
+                };
+                msg_begin_pos = i;
+                self.reset();
+                let len = ((t[i + 1] as usize) << 16) | ((t[i + 2] as usize) << 8) | t[i + 3] as usize;
+                /*if len == 0 || (len > (2usize << 24) + 255) {
+                    log::error!("HandshakeMessages::next - message size larger than the permitted size");
+                    return Err(Mutter::MsgSizeInvalid)
+                }*/
+                self.msg_type = msg_type;
+                self.size = len;
+                i += 4;
+                available_msg_len = min(t.len() - i, self.required());
+
+                match msg_type {
+                    HandshakeType::EncryptedExtensions => {
+                        log::info!("HandshakeMessageBuilder::update - EncryptedExtension");
+                    },
+                    HandshakeType::Certificate => {
+                        log::info!("HandshakeMessageBuilder::update - Certificate");
+                    },
+                    HandshakeType::CertificateVerify => {
+                        log::info!("HandshakeMessageBuilder::update - CertificateVerify");
+                    },
+                    HandshakeType::CertificateRequest => {
+                        log::info!("HandshakeMessageBuilder::update - CertificateRequest");
+                    },
+                    HandshakeType::Finished => {
+                        log::info!("HandshakeMessageBuilder::update - Finished");
+                        assert_eq!(self.size, 32); // TODO: use the size of the selected hash primitive
+                    },
+                    _ => {
+                        log::info!("HandshakeMessages::next - Unsupported HandshakeMessage.");
+                    }
+                }
+            } else { // we are updating an incomplete message record
+                assert!(self.copied > 0 && self.copied < self.size);
+                msg_begin_pos = i;
+                available_msg_len = min(t.len() - i, self.required());
+            }
+            self.copied += available_msg_len;
+            // messages except Finished are part of the message context
+            assert!(i + available_msg_len <= t.len());
+            if self.msg_type == HandshakeType::Finished {
+                log::info!("Finish mac = {:?}", &t[i-4..i + available_msg_len]);
+            }
+            let _ctx_len_ = traffic_ctx.len();
+            assert!(_ctx_len_ > 0);
+            if self.msg_type == HandshakeType::Certificate ||
+                self.msg_type == HandshakeType::CertificateVerify ||
+                self.msg_type == HandshakeType::EncryptedExtensions {
+                traffic_ctx.extend_from_slice(&t[msg_begin_pos..i + available_msg_len]);
+                // log::info!("Traffic Ctx for {:?} {:?}", self.msg_type, &t[msg_begin_pos..i + 8]);
+                // assert_eq!(_ctx_len_ + available_msg_len + 4, traffic_ctx.len());
+            }
+            i += available_msg_len;
+
+            // I notice that meta and facebook have an incorrect zer0-size extensions field
+            // after the CertificateEntry structure.
+            if self.msg_type == HandshakeType::Certificate {
+                // section 4.4.2, Certificate, page 64
+                // grab the extensions in the CertificateEntry
+                let _k_ = t[i..t.len()].iter().take_while(|&c| *c == 0).fold(0, |acc, _| acc + 1);
+                assert!(_k_ <= 2);
+                log::info!("\nCertificate Entry - skipped {_k_} bytes\n");
+                if _k_ > 0 {
+                    traffic_ctx.extend_from_slice(&t[i..i + _k_]);
+                    i += _k_;
+                }
+            }
+
+            // in case the plaintext length is less than the actual message length, go and get
+            // the next record. (Note: the next record needs to be decrypted).
+            if self.copied < self.required() {
+                // indicate this message is incomplete, and needs the next fragment...
+                log::info!("require more data to complete {:?}", self);
+                return Ok((false, self.clone()))
+            }
+
+            assert!(i <= t.len());
+            if i == t.len() - zero_pad_len - 1 && t[i] == RecordContentType::Handshake as u8 {
+                // traffic_ctx.push(t[i]);
+                return Ok((true, self.clone()))
+            }
+        }
+        Ok((true, self.clone()))
+    }
 }

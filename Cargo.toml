@@ -5,10 +5,18 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
-env_logger = "^0.11"
-log = "^0.4"
+aes-gcm = { version = "^0.10" }
+bytes = { version = "^1.6" }
 chrono = { version = "^0.4" }
-bytes = { version = "^1.6.0" }
+#crypto-mac = {  version = "^0.11" }
+ed25519-dalek = { version = "^2.1" }
+env_logger = { version = "^0.11" }
+hkdf = { version = "^0.12" }
+hmac = { version = "^0.12" }
+log = { version = "^0.4" }
+tokio = { version = "^1.38.0", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "time"] }
+x25519-dalek = { version = "^2.0", features = ["getrandom"] }
+rand_core = { version = "0.9.0-alpha.1", features = ["getrandom"] }
+sha2 = { version = "0.10.8" }
 # heapless-bytes = { version = "^0.3" }
-heapless = {  version = "^0.8" }
-tokio = { version = "1.38.0", features = ["io-util", "net", "rt", "rt-multi-thread", "macros"] }
+# heapless = {  version = "^0.8" }

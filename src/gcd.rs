@@ -43,7 +43,7 @@ impl Int {
     }
 
     // extended binary GCD algorithm
-    pub fn xb_gcd(a: &Int, b: &Int) -> (/* gcd */Int, /* s */Int, /* t */ Int) {
+    pub fn xbgcd(a: &Int, b: &Int) -> (/* gcd */Int, /* s */Int, /* t */ Int) {
         let (x, y) = (a.compact(), b.compact());
         if x.is_zero() && y.is_zero() {
             return (Int::zero(Digit::BITS), Int::zero(Digit::BITS), Int::zero(Digit::BITS))
@@ -141,7 +141,7 @@ mod xb_gcd_tests {
                  vec![2]),
         ];
         for case in cases {
-            let (gcd, s, t) = Int::xb_gcd(&case.0, &case.1);
+            let (gcd, s, t) = Int::xbgcd(&case.0, &case.1);
             assert_eq!(gcd.mag, case.2);
             assert_eq!(gcd, case.0.mul(&s).sum(&case.1.mul(&t)));
         }
